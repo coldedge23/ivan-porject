@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>班級工具箱</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      background: #f5f7fa;
+      color: #333;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 16px;
+    }
+    h1 { font-size: 2rem; margin-bottom: 8px; }
+    .subtitle { color: #666; margin-bottom: 48px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 24px;
+      width: 100%;
+      max-width: 800px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.15s, box-shadow 0.15s;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .card:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,0.12); }
+    .card .icon { font-size: 2rem; }
+    .card .name { font-size: 1.1rem; font-weight: 600; }
+    .card .desc { font-size: 0.85rem; color: #888; }
+    .empty {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: #aaa;
+      padding: 48px 0;
+    }
+    footer { margin-top: 64px; font-size: 0.8rem; color: #bbb; }
+  </style>
+</head>
+<body>
+  <h1>🧰 班級工具箱</h1>
+  <p class="subtitle">ivan-porject — 教學小工具集散地</p>
+
+  <div class="grid" id="tools-grid">
+    <!-- 工具卡片由 tools.js 動態插入；尚無工具時顯示空狀態 -->
+    <div class="empty">目前還沒有工具，<br>對 Claude 說「我想做一個 XXX 工具」來新增！</div>
+  </div>
+
+  <footer>資料去識別化 · 學生隱私保護 · ivan-porject</footer>
+</body>
+</html>
