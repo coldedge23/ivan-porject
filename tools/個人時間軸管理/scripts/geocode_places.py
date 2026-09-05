@@ -24,6 +24,8 @@ import urllib.request
 from math import radians, sin, cos, sqrt, atan2
 from pathlib import Path
 
+from jsonio import load_json, save_json_atomic
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 INPUT_FILE = BASE_DIR / "location-history.json"
 CACHE_FILE = BASE_DIR / "data" / "place_names.json"
@@ -59,16 +61,13 @@ def parse_geo(geo_str):
 
 
 def load_cache():
-    if CACHE_FILE.exists():
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    return load_json(CACHE_FILE, {})
 
 
 def save_cache(cache):
-    CACHE_FILE.parent.mkdir(exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    # 這支腳本會跑好幾個小時且中途定期存檔，直接覆寫的話，中斷在寫檔那一刻
+    # 就會留下壞掉的快取，整批反查結果全部白費
+    save_json_atomic(CACHE_FILE, cache, indent=2)
 
 
 def reverse_geocode(lat, lon):

@@ -391,9 +391,59 @@ const yearCache = {};
 let indexData = null;
 let currentMonthKey = null; // 有值代表目前在月/日視圖；null 代表在年視圖
 
+// ── 呈現層的覆寫 ────────────────────────────────────────────────
+// 「修正名稱」與「釘選」不會寫進 geojson，那些檔案永遠只放反查回來的原始名稱
+// 與 Google 判定的 auto 釘選。改一個常去地點的名字會影響它出現過的每一個月檔
+// （實測 80 個檔案、十幾秒），但改變的只是一個字串，沒有任何數字不同。
+// 所以覆寫只保留一份、在畫面上套用，改了立刻生效也不必重跑轉換。
+// 重建之後才會設值。平常留空，讓瀏覽器正常快取那 28 MB 的 geojson；
+// 一旦重建過就帶上版本號，強制取得新內容。Last-Modified 只有「秒」的精度，
+// 光靠它重新驗證，連續操作可能落在同一秒而拿到舊資料。
+let dataVersion = '';
+function dataUrl(path) {
+  return dataVersion ? `${path}?v=${dataVersion}` : path;
+}
+
+let overridesData = {};   // placeId -> 手動修正的名稱
+let pinnedData = new Set();  // 手動釘選的 placeId
+
+// 畫面上要顯示的地點名稱。所有地方都要走這個函式，不能直接用 placeName，
+// 否則同一個地點會在不同面板顯示不同名字。
+function displayNameFor(placeId, fallback) {
+  return (placeId && overridesData[placeId]) || fallback || '未知地點';
+}
+
+function displayName(props) {
+  return displayNameFor(props.placeId, props.placeName || props.semanticType);
+}
+
+// 地圖上要不要畫成綠色菱形。auto 是 Google 判定的（烙在資料裡），
+// manual 是使用者自己釘的（存在單獨的檔案）。
+function effectivePin(props) {
+  if (props.pinSource === 'auto') return 'auto';
+  if (props.placeId && pinnedData.has(props.placeId)) return 'manual';
+  return null;
+}
+
 function localDay(iso) {
   const d = new Date(iso);
   return String(d.getDate()).padStart(2, '0');
+}
+
+// 跨月的記錄會同時出現在好幾個月的檔案裡，homeMonth 標出它原本屬於哪個月。
+// 地圖要全部畫出來，但做加總的面板只能認自己那一份，否則同一筆會被算兩次。
+function ownedBy(props, prefix) {
+  return !props.homeMonth || props.homeMonth.startsWith(prefix);
+}
+
+// 這筆記錄在指定月份裡涵蓋了哪幾天（跨日的停留要在每一天都看得到）
+function featureDaysInMonth(props, monthKey) {
+  if (props.spanDates) {
+    return props.spanDates
+      .filter(d => d.startsWith(monthKey))
+      .map(d => d.slice(8, 10));
+  }
+  return [localDay(props.startTime)];
 }
 
 function fmtTime(iso) {
@@ -470,40 +520,56 @@ function renderStats(geojson) {
   `;
 }
 
-function escapeAttr(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+// 地點名稱可能來自手動「修正名稱」，也可能是 OSM 上別人填的資料，一律當成
+// 不可信的文字。屬性值與畫面上的文字都用這一個函式，兩種情境的跳脫需求都涵蓋。
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function popupForVisit(props) {
-  const title = props.placeName || props.semanticType || '未知地點';
+  const title = displayName(props);
+  const safeTitle = escapeHtml(title);
+  const safeType = escapeHtml(props.semanticType || '未知');
+  const pin = effectivePin(props);
 
   let pinControl;
-  if (props.pinSource === 'auto') {
-    pinControl = `<span style="color:#008300">★ 常用地點（Google 判定為 ${props.semanticType}）</span>`;
+  if (pin === 'auto') {
+    pinControl = `<span style="color:#008300">★ 常用地點（Google 判定為 ${safeType}）</span>`;
   } else {
-    const label = props.pinSource === 'manual' ? '取消釘選' : '釘選為常用地點';
-    pinControl = `<button class="btn-toggle-pin" data-place-id="${escapeAttr(props.placeId)}">${label}</button>`;
+    const isPinned = pin === 'manual';
+    const label = isPinned ? '取消釘選' : '釘選為常用地點';
+    // data-pinned 讓按鈕送出「要變成什麼狀態」而不是「切換」，重試才不會把狀態改回去
+    pinControl = `<button class="btn-toggle-pin" data-place-id="${escapeHtml(props.placeId)}" data-pinned="${isPinned}">${label}</button>`;
   }
 
   return `
-    <b>${title}</b><br>
-    類型：${props.semanticType || '未知'}<br>
+    <b>${safeTitle}</b><br>
+    類型：${safeType}<br>
     開始：${fmtTime(props.startTime)}<br>
     結束：${fmtTime(props.endTime)}<br>
     停留：${durationText(props.startTime, props.endTime)}
     <div class="popup-actions">
-      <button class="btn-fix-name" data-place-id="${escapeAttr(props.placeId)}" data-current-name="${escapeAttr(title)}">修正名稱</button>
-      <button class="btn-hide-visit" data-place-id="${escapeAttr(props.placeId)}" data-start-time="${escapeAttr(props.startTime)}">隱藏這筆</button>
+      <button class="btn-fix-name" data-place-id="${escapeHtml(props.placeId)}" data-current-name="${escapeHtml(title)}">修正名稱</button>
+      <button class="btn-hide-visit" data-place-id="${escapeHtml(props.placeId)}" data-start-time="${escapeHtml(props.startTime)}">隱藏這筆</button>
     </div>
     <div class="popup-actions">${pinControl}</div>
   `;
 }
 
 function popupForActivity(props) {
-  const dist = props.distanceMeters ? `${Math.round(parseFloat(props.distanceMeters))} 公尺` : '未知';
+  // distanceInvalid：原始資料的距離明顯不合理（宣稱上萬公里但頭尾幾乎同一點），
+  // 轉換時已剔除不計入統計，這裡要說清楚，不能讓它看起來像「剛好沒記錄到」
+  const dist = props.distanceInvalid
+    ? '原始資料異常，未採計'
+    : (props.distanceMeters ? `${Math.round(parseFloat(props.distanceMeters))} 公尺` : '未知');
   return `
     <b>移動段落</b><br>
-    方式：${props.activityType || '未知'}<br>
+    方式：${escapeHtml(props.activityType || '未知')}<br>
     距離：${dist}<br>
     開始：${fmtTime(props.startTime)}<br>
     結束：${fmtTime(props.endTime)}
@@ -527,7 +593,7 @@ function renderGeoJSON(geojson) {
     const type = f.properties.type;
     if (type === 'visit') {
       const [lon, lat] = f.geometry.coordinates;
-      if (f.properties.pinSource) {
+      if (effectivePin(f.properties)) {
         L.marker([lat, lon], { icon: pinnedIcon, zIndexOffset: 1000 })
           .bindPopup(popupForVisit(f.properties))
           .addTo(layers.pinned);
@@ -601,7 +667,7 @@ async function loadYear(year) {
   currentMonthKey = null;
   disableDaySelect();
   if (!yearCache[year]) {
-    const res = await fetch(`data/${year}.geojson`);
+    const res = await fetch(dataUrl(`data/${year}.geojson`));
     yearCache[year] = await res.json();
   }
   renderGeoJSON(yearCache[year]);
@@ -611,12 +677,14 @@ async function loadMonth(monthKey) {
   statusEl.textContent = '載入中...';
   currentMonthKey = monthKey;
   if (!monthCache[monthKey]) {
-    const res = await fetch(`data/${monthKey}.geojson`);
+    const res = await fetch(dataUrl(`data/${monthKey}.geojson`));
     monthCache[monthKey] = await res.json();
   }
   const geojson = monthCache[monthKey];
 
-  const days = [...new Set(geojson.features.map(f => localDay(f.properties.startTime)))].sort();
+  const days = [...new Set(
+    geojson.features.flatMap(f => featureDaysInMonth(f.properties, monthKey))
+  )].sort();
   populateDaySelect(days);
   daySelect.value = '';
 
@@ -633,17 +701,23 @@ function applyDayFilter() {
   }
   const filtered = {
     type: 'FeatureCollection',
-    features: geojson.features.filter(f => localDay(f.properties.startTime) === day),
+    features: geojson.features.filter(
+      f => featureDaysInMonth(f.properties, currentMonthKey).includes(day)
+    ),
   };
   renderGeoJSON(filtered);
 }
 
 let searchIndexData = [];
 let dailyStats = {};
+let auxReady = Promise.resolve();  // 各面板資料載入完成的 promise，見 init()
 let calendarYear = null;
 
 // 單一藍色相由淺到深的 sequential 色階；無資料用中性灰，不參與色階
 const CAL_NO_DATA = '#eeeeec';
+// 有 GPS 記錄但沒有可計算的移動距離（例如整天只有軌跡點，或只有停留沒有移動段落）。
+// 這種日子跟「完全沒記錄」是兩回事，不能都塗成灰色，也不能混進距離色階當成 0 公里。
+const CAL_NO_DISTANCE = '#f0e6cf';
 const CAL_LEVELS = [
   { max: 5, color: '#cde2fb', label: '< 5' },
   { max: 20, color: '#9ec5f4', label: '5-20' },
@@ -656,7 +730,8 @@ function calColor(km) {
   return CAL_LEVELS.find(l => km < l.max).color;
 }
 
-function renderCalendar(year) {
+async function renderCalendar(year) {
+  await auxReady;
   calendarYear = year;
   document.getElementById('calTitle').textContent = `${year} 年`;
 
@@ -702,11 +777,18 @@ function renderCalendar(year) {
         cell.style.background = CAL_NO_DATA;
       } else {
         const km = stat.m / 1000;
-        cell.style.background = calColor(km);
+        cell.style.background = stat.m > 0 ? calColor(km) : CAL_NO_DISTANCE;
         cell.classList.add('has-data');
 
         cell.addEventListener('mouseenter', (e) => {
-          tooltip.innerHTML = `${dateKey}<br>移動 ${km.toFixed(1)} km・停留點 ${stat.v} 個`;
+          // 只列出真的有數字的項目；三項都是 0 代表這天只被跨夜的記錄涵蓋到
+          const parts = [];
+          if (stat.m > 0) parts.push(`移動 ${km.toFixed(1)} km`);
+          if (stat.v > 0) parts.push(`停留點 ${stat.v} 個`);
+          if (stat.p > 0) parts.push(`軌跡 ${stat.p} 段`);
+          if (stat.m === 0 && parts.length) parts.push('無移動距離資料');
+          const detail = parts.length ? parts.join('・') : '前後日的記錄延續到這天';
+          tooltip.innerHTML = `${dateKey}<br>${detail}`;
           tooltip.hidden = false;
           const rect = e.target.getBoundingClientRect();
           tooltip.style.left = `${rect.left}px`;
@@ -727,6 +809,8 @@ function renderCalendar(year) {
   legend.innerHTML = `
     <span>無資料</span>
     <span class="swatch" style="background:${CAL_NO_DATA}"></span>
+    <span style="margin-left:12px">有記錄無距離</span>
+    <span class="swatch" style="background:${CAL_NO_DISTANCE}"></span>
     <span style="margin-left:12px">移動距離 (km)：</span>
     ${CAL_LEVELS.map(l => `
       <span class="swatch" style="background:${l.color}"></span>
@@ -742,6 +826,7 @@ function fmtNum(n) {
 }
 
 async function renderReview(year) {
+  await auxReady;
   reviewYear = year;
   document.getElementById('reviewTitle').textContent = `${year} 年回顧`;
 
@@ -753,7 +838,7 @@ async function renderReview(year) {
   body.innerHTML = '<div class="review-empty">統計中...</div>';
 
   if (!yearCache[year]) {
-    const res = await fetch(`data/${year}.geojson`);
+    const res = await fetch(dataUrl(`data/${year}.geojson`));
     yearCache[year] = await res.json();
   }
   const features = yearCache[year].features;
@@ -762,7 +847,7 @@ async function renderReview(year) {
   let totalMeters = 0;
   const byMode = {};
   features.forEach(f => {
-    if (f.properties.type !== 'activity') return;
+    if (f.properties.type !== 'activity' || !ownedBy(f.properties, year)) return;
     const mode = f.properties.activityType || 'unknown';
     const dist = parseFloat(f.properties.distanceMeters) || 0;
     byMode[mode] = (byMode[mode] || 0) + dist;
@@ -773,12 +858,14 @@ async function renderReview(year) {
   const visitCounts = {};
   features.forEach(f => {
     const p = f.properties;
-    if (p.type !== 'visit' || !p.placeId) return;
+    if (p.type !== 'visit' || !p.placeId || !ownedBy(p, year)) return;
     if (!visitCounts[p.placeId]) {
       visitCounts[p.placeId] = {
         count: 0,
-        name: p.placeName || p.semanticType || '未知地點',
-        pinned: p.pinSource === 'auto',
+        name: displayName(p),
+        // 用 isHomeWork（整份資料彙總的判定）而不是 pinSource（地圖上的畫法）。
+        // 兩個面板以前各用各的條件，手動釘選的地點在這裡跟排行榜會不一致。
+        isHomeWork: !!p.isHomeWork,
         coords: f.geometry.coordinates,
       };
     }
@@ -793,7 +880,12 @@ async function renderReview(year) {
   // 有記錄的天數 + 移動最遠的一天
   const daysThisYear = Object.entries(dailyStats).filter(([d]) => d.startsWith(year));
   const recordedDays = daysThisYear.length;
-  const farthest = daysThisYear.reduce((best, cur) => (cur[1].m > best[1].m ? cur : best), daysThisYear[0]);
+  // 這一年可能完全沒有 daily_stats（例如只有軌跡、沒有移動段落），
+  // 或有記錄但距離全是 0，這兩種情況都不能當成「最遠的一天」拿去顯示
+  const farthest = daysThisYear.length
+    ? daysThisYear.reduce((best, cur) => (cur[1].m > best[1].m ? cur : best))
+    : null;
+  const hasFarthest = farthest !== null && farthest[1].m > 0;
 
   // 交通方式長條圖：取前 6 名，其餘併為「其他」
   const modeEntries = Object.entries(byMode).sort((a, b) => b[1] - a[1]);
@@ -812,14 +904,14 @@ async function renderReview(year) {
 
   // 最常去的地點（排除住家/公司，那些一定排最前面，看不出資訊）
   const topPlaces = Object.entries(visitCounts)
-    .filter(([, v]) => !v.pinned)
+    .filter(([, v]) => !v.isHomeWork)
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, 5);
 
   const placeRows = topPlaces.map(([placeId, v], i) => `
-    <div class="place-row" data-lat="${v.coords[1]}" data-lon="${v.coords[0]}">
+    <div class="place-row" data-place-id="${escapeHtml(placeId)}" data-lat="${v.coords[1]}" data-lon="${v.coords[0]}">
       <span class="rank">${i + 1}</span>
-      <span class="place-name">${escapeAttr(v.name)}</span>
+      <span class="place-name">${escapeHtml(v.name)}</span>
       <span class="place-count">${v.count} 次</span>
     </div>
   `).join('') || '<div class="review-empty">這一年沒有住家/公司以外的停留記錄</div>';
@@ -840,10 +932,10 @@ async function renderReview(year) {
         <div class="tile-value">${fmtNum(distinctPlaces)} 個</div>
         <div class="tile-sub">其中 ${fmtNum(newPlaces)} 個是第一次去</div>
       </div>
-      <div class="review-tile clickable" id="farthestDayTile">
+      <div class="review-tile${hasFarthest ? ' clickable' : ''}"${hasFarthest ? ' id="farthestDayTile"' : ''}>
         <div class="tile-label">移動最遠的一天</div>
-        <div class="tile-value">${fmtNum(farthest[1].m / 1000)} km</div>
-        <div class="tile-sub">${farthest[0]}（點擊查看）</div>
+        <div class="tile-value">${hasFarthest ? fmtNum(farthest[1].m / 1000) + ' km' : '—'}</div>
+        <div class="tile-sub">${hasFarthest ? farthest[0] + '（點擊查看）' : '這一年沒有移動距離資料'}</div>
       </div>
     </div>
 
@@ -858,7 +950,7 @@ async function renderReview(year) {
     </div>
   `;
 
-  const tile = document.getElementById('farthestDayTile');
+  const tile = hasFarthest ? document.getElementById('farthestDayTile') : null;
   if (tile) {
     tile.addEventListener('click', () => {
       const [y, m, d] = farthest[0].split('-');
@@ -871,9 +963,10 @@ async function renderReview(year) {
     row.addEventListener('click', () => {
       document.getElementById('reviewOverlay').hidden = true;
       goToPlace({
+        placeId: row.dataset.placeId,
         lat: parseFloat(row.dataset.lat),
         lon: parseFloat(row.dataset.lon),
-        months: indexData.months.filter(m => m.startsWith(year)),
+        preferYear: year,
       });
     });
   });
@@ -915,7 +1008,8 @@ function hourChart(trips, title) {
   `;
 }
 
-function renderCommute(year) {
+async function renderCommute(year) {
+  await auxReady;
   commuteYear = year;
   document.getElementById('commuteTitle').textContent = `${year} 年通勤分析`;
 
@@ -1039,7 +1133,7 @@ async function renderRhythm(year) {
   body.innerHTML = '<div class="review-empty">統計中...</div>';
 
   if (!yearCache[year]) {
-    const res = await fetch(`data/${year}.geojson`);
+    const res = await fetch(dataUrl(`data/${year}.geojson`));
     yearCache[year] = await res.json();
   }
 
@@ -1047,7 +1141,7 @@ async function renderRhythm(year) {
   const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
   const byHour = new Array(24).fill(0);
   yearCache[year].features.forEach(f => {
-    if (f.properties.type !== 'activity') return;
+    if (f.properties.type !== 'activity' || !ownedBy(f.properties, year)) return;
     const d = new Date(f.properties.startTime);
     grid[weekdayIndex(d)][d.getHours()] += 1;
     byHour[d.getHours()] += 1;
@@ -1157,7 +1251,8 @@ async function renderRhythm(year) {
 
 let coverageData = null;
 
-function renderCoverage() {
+async function renderCoverage() {
+  await auxReady;
   const body = document.getElementById('coverageBody');
   if (!coverageData) {
     body.innerHTML = '<div class="review-empty">資料載入中...</div>';
@@ -1193,7 +1288,7 @@ function renderCoverage() {
       return `<div class="cov-item not-visited"><div class="cov-name">${city}</div><div class="cov-meta">還沒去過</div></div>`;
     }
     return `
-      <div class="cov-item visited" data-key="${escapeAttr(r.country + '|' + r.name)}">
+      <div class="cov-item visited" data-key="${escapeHtml(r.country + '|' + r.name)}">
         <div class="cov-name">${city}</div>
         <div class="cov-meta">${s.places} 個地點・${s.visits} 次</div>
       </div>
@@ -1205,7 +1300,7 @@ function renderCoverage() {
     .map(r => {
       const s = stat(r);
       return `
-        <div class="cov-item visited" data-key="${escapeAttr(r.country + '|' + r.name)}">
+        <div class="cov-item visited" data-key="${escapeHtml(r.country + '|' + r.name)}">
           <div class="cov-name">${r.name}</div>
           <div class="cov-meta">${s.places} 個地點・${s.visits} 次</div>
         </div>
@@ -1238,39 +1333,46 @@ function renderCoverage() {
   `;
 
   body.querySelectorAll('.cov-item.visited').forEach(item => {
-    item.addEventListener('click', () => showRegionDetail(item.dataset.key));
+    item.addEventListener('click', () => showRegionDetail(item.dataset.key, year));
   });
 }
 
-function showRegionDetail(key) {
+// year 為空字串代表「全部年份」。選了年份就只看那一年的地點排行與起訖日期，
+// 免得上面的數字是單一年份、展開的明細卻是全期間，兩邊對不起來。
+function showRegionDetail(key, year) {
   const r = coverageData.regions[key];
   if (!r) return;
+  const scoped = year && r.byYear[year] ? r.byYear[year] : null;
+  const topPlaces = scoped ? scoped.topPlaces : r.topPlaces;
+  const placeCount = scoped ? scoped.places : r.placeCount;
+  const firstDate = scoped ? scoped.firstDate : r.firstDate;
+  const lastDate = scoped ? scoped.lastDate : r.lastDate;
+  const scopeLabel = scoped ? `${year} 年` : '全部年份';
   const detail = document.getElementById('covDetail');
 
-  const rows = r.topPlaces.map((p, i) => `
-    <div class="place-row" data-place-id="${escapeAttr(p.placeId)}" data-lat="${p.lat}" data-lon="${p.lon}">
+  const rows = topPlaces.map((p, i) => `
+    <div class="place-row" data-place-id="${escapeHtml(p.placeId)}" data-lat="${p.lat}" data-lon="${p.lon}">
       <span class="rank">${i + 1}</span>
-      <span class="place-name">${escapeAttr(p.name)}</span>
+      <span class="place-name">${escapeHtml(displayNameFor(p.placeId, p.name))}</span>
       <span class="place-count">${p.visits} 次</span>
     </div>
   `).join('');
 
   detail.innerHTML = `
-    <h4>${r.name}　<span style="font-weight:normal;color:#898781;font-size:12px">
-      ${r.placeCount} 個地點・${r.firstDate} 起至 ${r.lastDate}</span></h4>
+    <h4>${escapeHtml(r.name)}　<span style="font-weight:normal;color:#898781;font-size:12px">
+      ${scopeLabel}・${placeCount} 個地點・${firstDate} 起至 ${lastDate}</span></h4>
     ${rows}
   `;
   detail.hidden = false;
 
   detail.querySelectorAll('.place-row').forEach(row => {
     row.addEventListener('click', () => {
-      // 用搜尋索引查出這個地點實際出現過的月份，才不會跳到沒有它的月份
-      const indexed = searchIndexData.find(p => p.placeId === row.dataset.placeId);
       document.getElementById('coverageOverlay').hidden = true;
       goToPlace({
+        placeId: row.dataset.placeId,
         lat: parseFloat(row.dataset.lat),
         lon: parseFloat(row.dataset.lon),
-        months: indexed ? indexed.months : indexData.months,
+        preferYear: year || undefined,
       });
     });
   });
@@ -1292,18 +1394,20 @@ async function renderTopPlaces(year) {
   body.innerHTML = '<div class="review-empty">統計中...</div>';
 
   if (!yearCache[year]) {
-    const res = await fetch(`data/${year}.geojson`);
+    const res = await fetch(dataUrl(`data/${year}.geojson`));
     yearCache[year] = await res.json();
   }
 
   const places = {};
   yearCache[year].features.forEach(f => {
     const p = f.properties;
-    if (p.type !== 'visit' || !p.placeId) return;
+    if (p.type !== 'visit' || !p.placeId || !ownedBy(p, year)) return;
     if (!places[p.placeId]) {
       places[p.placeId] = {
-        name: p.placeName || p.semanticType || '未知地點',
-        pinned: !!p.pinSource,
+        placeId: p.placeId,
+        name: displayName(p),
+        isHomeWork: !!p.isHomeWork,          // 排除條件用這個
+        pinned: !!effectivePin(p),           // 綠色菱形標記用這個
         coords: f.geometry.coordinates,
         count: 0,
         minutes: 0,
@@ -1313,9 +1417,9 @@ async function renderTopPlaces(year) {
     places[p.placeId].minutes += (new Date(p.endTime) - new Date(p.startTime)) / 60000;
   });
 
-  const excludePinned = document.getElementById('excludePinned').checked;
+  const excludeHomeWork = document.getElementById('excludePinned').checked;
   let rows = Object.values(places);
-  if (excludePinned) rows = rows.filter(r => !r.pinned);
+  if (excludeHomeWork) rows = rows.filter(r => !r.isHomeWork);
 
   rows.sort((a, b) => (topPlacesSort === 'count' ? b.count - a.count : b.minutes - a.minutes));
   rows = rows.slice(0, 20);
@@ -1330,9 +1434,9 @@ async function renderTopPlaces(year) {
   const html = rows.map((r, i) => {
     const val = topPlacesSort === 'count' ? r.count : r.minutes;
     return `
-      <tr class="clickable" data-lat="${r.coords[1]}" data-lon="${r.coords[0]}">
+      <tr class="clickable" data-place-id="${escapeHtml(r.placeId)}" data-lat="${r.coords[1]}" data-lon="${r.coords[0]}">
         <td class="rank-no">${i + 1}</td>
-        <td>${r.pinned ? '<span class="pin-mark"></span>' : ''}${escapeAttr(r.name)}</td>
+        <td>${r.pinned ? '<span class="pin-mark"></span>' : ''}${escapeHtml(r.name)}</td>
         <td class="rank-bar-cell"><div class="rank-bar" style="width:${Math.max(4, (val / maxVal) * 100)}%"></div></td>
         <td class="num">${r.count} 次</td>
         <td class="num">${fmtNum(r.minutes / 60)} 小時</td>
@@ -1358,9 +1462,10 @@ async function renderTopPlaces(year) {
     row.addEventListener('click', () => {
       document.getElementById('topPlacesOverlay').hidden = true;
       goToPlace({
+        placeId: row.dataset.placeId,
         lat: parseFloat(row.dataset.lat),
         lon: parseFloat(row.dataset.lon),
-        months: indexData.months.filter(m => m.startsWith(year)),
+        preferYear: year,
       });
     });
   });
@@ -1381,23 +1486,43 @@ async function goToDay(year, month, day) {
   }
 }
 
+// place: { placeId?, lat, lon, months?, preferYear? }
+// 一律用搜尋索引查出這個地點「實際出現過」的月份。呼叫端若只給了整年的月份清單，
+// 直接取最後一個會跳到 12 月，即使那個地點只在 3 月去過。
 async function goToPlace(place) {
-  const targetMonth = place.months[place.months.length - 1]; // 最近一次出現的月份
+  const indexed = place.placeId
+    ? searchIndexData.find(p => p.placeId === place.placeId)
+    : null;
+  let months = (indexed && indexed.months) || place.months || indexData.months;
+  if (place.preferYear) {
+    const inYear = months.filter(m => m.startsWith(place.preferYear));
+    if (inYear.length) months = inYear;  // 從哪一年點進來的，就留在那一年
+  }
+  if (!months.length) return;
+
+  const targetMonth = months[months.length - 1]; // 該範圍內最近一次出現的月份
   const year = targetMonth.slice(0, 4);
   yearSelect.value = year;
   populateMonthSelect(year);
   monthSelect.value = targetMonth;
   await loadMonth(targetMonth);
 
+  // 住家/公司與釘選的地點畫在 pinned 圖層，不在叢集裡，兩層都要找
   let target = null;
-  layers.visit.eachLayer(m => {
+  let inCluster = false;
+  const match = (m) => {
     const ll = m.getLatLng();
-    if (Math.abs(ll.lat - place.lat) < 0.0001 && Math.abs(ll.lng - place.lon) < 0.0001) {
-      target = m;
-    }
-  });
-  if (target) {
+    return Math.abs(ll.lat - place.lat) < 0.0001 && Math.abs(ll.lng - place.lon) < 0.0001;
+  };
+  layers.visit.eachLayer(m => { if (match(m)) { target = m; inCluster = true; } });
+  if (!target) layers.pinned.eachLayer(m => { if (match(m)) target = m; });
+
+  if (!target) return;
+  if (inCluster) {
     layers.visit.zoomToShowLayer(target, () => target.openPopup());
+  } else {
+    map.setView(target.getLatLng(), Math.max(map.getZoom(), 16));
+    target.openPopup();
   }
 }
 
@@ -1409,12 +1534,16 @@ function renderSearchResults(query) {
     return;
   }
   const q = query.toLowerCase();
-  const matches = searchIndexData.filter(p => p.name && p.name.toLowerCase().includes(q)).slice(0, 15);
+  // 用顯示名稱來比對，不然改過名字的地點要打舊名字才搜得到
+  const matches = searchIndexData
+    .map(p => ({ ...p, name: displayNameFor(p.placeId, p.name) }))
+    .filter(p => p.name && p.name.toLowerCase().includes(q))
+    .slice(0, 15);
 
   if (matches.length === 0) {
     resultsEl.innerHTML = '<div class="no-result">找不到符合的地點</div>';
   } else {
-    resultsEl.innerHTML = matches.map((p, i) => `<div data-idx="${i}">${escapeAttr(p.name)}</div>`).join('');
+    resultsEl.innerHTML = matches.map((p, i) => `<div data-idx="${i}">${escapeHtml(p.name)}</div>`).join('');
     resultsEl.querySelectorAll('div[data-idx]').forEach(el => {
       el.addEventListener('click', () => {
         const place = matches[parseInt(el.dataset.idx, 10)];
@@ -1442,6 +1571,76 @@ async function reloadCurrentView() {
   }
 }
 
+function loadAuxData() {
+  const bust = `?v=${Date.now()}`;
+  return Promise.all([
+    loadPresentationOverrides(),
+    fetch('data/search_index.json' + bust).then(r => r.json()).then(d => { searchIndexData = d; }),
+    fetch('data/daily_stats.json' + bust).then(r => r.json()).then(d => { dailyStats = d; }),
+    fetch('data/commutes.json' + bust).then(r => r.json()).then(d => { commuteData = d; }),
+    fetch('data/coverage.json' + bust).then(r => r.json()).then(d => { coverageData = d; }),
+  ]);
+}
+
+// 用目前已經在記憶體裡的資料重畫地圖，不重新下載
+function redrawCurrentView() {
+  if (currentMonthKey && monthCache[currentMonthKey]) {
+    applyDayFilter();
+  } else if (yearCache[yearSelect.value]) {
+    renderGeoJSON(yearCache[yearSelect.value]);
+  }
+}
+
+// 目前開著的面板要跟著重畫，不然它會停在編輯前的內容
+async function rerenderOpenPanel() {
+  const panels = [
+    ['reviewOverlay', () => renderReview(reviewYear || yearSelect.value)],
+    ['topPlacesOverlay', () => renderTopPlaces(topPlacesYear || yearSelect.value)],
+    ['calendarOverlay', () => renderCalendar(calendarYear || yearSelect.value)],
+    ['commuteOverlay', () => renderCommute(commuteYear || yearSelect.value)],
+    ['rhythmOverlay', () => renderRhythm(rhythmYear || yearSelect.value)],
+    ['coverageOverlay', () => renderCoverage()],
+  ];
+  for (const [id, render] of panels) {
+    const el = document.getElementById(id);
+    if (el && !el.hidden) await render();
+  }
+}
+
+// 只改了呈現層（名稱／釘選）：geojson 完全沒變，重抓那兩個小檔案再重畫即可，
+// 幾乎沒有延遲
+async function refreshPresentation() {
+  await loadPresentationOverrides();
+  redrawCurrentView();
+  await rerenderOpenPanel();
+}
+
+// 資料真的變了（隱藏記錄會改變統計數字）：所有快取一律作廢。
+// 只清「目前這一個月」是不夠的——同一個地點可能出現在幾十個月份，
+// 其他已快取的月份、年檔、搜尋索引都還是舊的，看起來就像修改沒生效。
+async function refreshAfterRebuild() {
+  dataVersion = String(Date.now());   // 讓接下來的請求繞過瀏覽器快取
+  for (const k of Object.keys(monthCache)) delete monthCache[k];
+  for (const k of Object.keys(yearCache)) delete yearCache[k];
+  auxReady = loadAuxData();
+  await auxReady;
+  await reloadCurrentView();
+  await rerenderOpenPanel();
+}
+
+// 這兩個檔案很小（通常幾百 bytes），編輯後直接重抓即可。
+// 加時間戳是為了繞過瀏覽器快取——Last-Modified 只有秒的精度，
+// 連續操作可能落在同一秒而拿到舊的內容。
+async function loadPresentationOverrides() {
+  const bust = `?v=${Date.now()}`;
+  const [names, pins] = await Promise.all([
+    fetch('data/place_name_overrides.json' + bust).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    fetch('data/pinned_places.json' + bust).then(r => r.ok ? r.json() : []).catch(() => ([])),
+  ]);
+  overridesData = (names && typeof names === 'object' && !Array.isArray(names)) ? names : {};
+  pinnedData = new Set(Array.isArray(pins) ? pins.filter(x => typeof x === 'string') : []);
+}
+
 async function postToServer(path, payload) {
   let res;
   try {
@@ -1453,9 +1652,29 @@ async function postToServer(path, payload) {
   } catch (err) {
     throw new Error('連不到伺服器，請確認是用 啟動地圖.bat 開的（純靜態伺服器不支援這個功能）');
   }
+  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `伺服器錯誤（${res.status}）`);
+    const err = new Error(body.error || `伺服器錯誤（${res.status}）`);
+    // saved 為 true 代表修改已經寫進檔案、只是重新產生地圖資料失敗。
+    // 這種情況不能叫使用者「再試一次」，那會把已經存好的狀態再改一次。
+    err.saved = body.saved === true;
+    throw err;
+  }
+  return body;
+}
+
+// 送出失敗時要講清楚修改到底存了沒，使用者才知道能不能重按
+function reportApiError(err, action) {
+  if (err.saved) {
+    alert(`${action}已經存檔，但重新產生地圖資料失敗，畫面還沒更新。
+
+`
+      + `不要重複按（會把剛存好的改回去）。請看伺服器視窗的錯誤訊息，`
+      + `修好之後手動執行 更新資料.bat 即可。
+
+${err.message}`);
+  } else {
+    alert(`${action}失敗（沒有變更任何資料）：${err.message}`);
   }
 }
 
@@ -1474,9 +1693,9 @@ map.on('popupopen', (e) => {
       try {
         await postToServer('/api/override-name', { placeId, name: newName });
         map.closePopup();
-        await reloadCurrentView();
+        await refreshPresentation();
       } catch (err) {
-        alert('儲存失敗：' + err.message);
+        reportApiError(err, '名稱修正');
         fixBtn.disabled = false;
         fixBtn.textContent = '修正名稱';
       }
@@ -1488,14 +1707,15 @@ map.on('popupopen', (e) => {
     pinBtn.addEventListener('click', async () => {
       const placeId = pinBtn.dataset.placeId;
       const originalLabel = pinBtn.textContent;
+      const wantPinned = pinBtn.dataset.pinned !== 'true';  // 目標狀態，不是切換
       pinBtn.disabled = true;
       pinBtn.textContent = '處理中...';
       try {
-        await postToServer('/api/toggle-pin', { placeId });
+        await postToServer('/api/toggle-pin', { placeId, pinned: wantPinned });
         map.closePopup();
-        await reloadCurrentView();
+        await refreshPresentation();
       } catch (err) {
-        alert('操作失敗：' + err.message);
+        reportApiError(err, wantPinned ? '釘選' : '取消釘選');
         pinBtn.disabled = false;
         pinBtn.textContent = originalLabel;
       }
@@ -1513,9 +1733,9 @@ map.on('popupopen', (e) => {
       try {
         await postToServer('/api/exclude-visit', { placeId, startTime });
         map.closePopup();
-        await reloadCurrentView();
+        await refreshAfterRebuild();
       } catch (err) {
-        alert('操作失敗：' + err.message);
+        reportApiError(err, '隱藏記錄');
         hideBtn.disabled = false;
         hideBtn.textContent = '隱藏這筆';
       }
@@ -1527,13 +1747,11 @@ async function init() {
   const res = await fetch('data/index.json');
   indexData = await res.json();
 
-  fetch('data/search_index.json').then(r => r.json()).then(data => { searchIndexData = data; });
-  fetch('data/daily_stats.json').then(r => r.json()).then(data => { dailyStats = data; });
-  fetch('data/commutes.json').then(r => r.json()).then(data => { commuteData = data; });
-  fetch('data/coverage.json').then(r => r.json()).then(data => {
-    coverageData = data;
-    if (!document.getElementById('coverageOverlay').hidden) renderCoverage();
-  });
+  // 這幾份是各分析面板的資料來源，平行載入；面板開啟前會先 await auxReady，
+  // 免得在還沒載完時拿到空物件（年度回顧會因此整頁壞掉）
+  auxReady = loadAuxData();
+
+  await auxReady;
 
   const calOverlay = document.getElementById('calendarOverlay');
   document.getElementById('calendarBtn').addEventListener('click', () => {
