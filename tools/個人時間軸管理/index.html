@@ -184,6 +184,54 @@
     font-size: 11px; color: #52514e;
   }
   #rhythmLegend .swatch { width: 18px; height: 18px; border-radius: 2px; }
+
+  /* 常去地點排行 */
+  #topPlacesCard { width: 640px; }
+  .rank-controls { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; font-size: 12px; color: #52514e; }
+  .rank-controls .seg { display: flex; border: 1px solid #c3c2b7; border-radius: 4px; overflow: hidden; }
+  .rank-controls .seg button {
+    font-size: 12px; padding: 4px 12px; border: none; background: #fff; cursor: pointer; color: #52514e;
+  }
+  .rank-controls .seg button.active { background: #2a78d6; color: #fff; }
+  .rank-controls label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+  .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rank-table th {
+    text-align: left; font-weight: normal; color: #898781; font-size: 11px;
+    border-bottom: 1px solid #e1e0d9; padding: 0 8px 5px 0;
+  }
+  .rank-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid #f0efec; }
+  .rank-table tr.clickable { cursor: pointer; }
+  .rank-table tr.clickable:hover td { background: #e8f0fe; }
+  .rank-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: #52514e; }
+  .rank-table td.rank-no { color: #898781; font-size: 11px; width: 28px; }
+  .rank-table .pin-mark {
+    display: inline-block; width: 8px; height: 8px; background: #008300;
+    border-radius: 1px; transform: rotate(45deg); margin-right: 6px;
+  }
+  .rank-bar-cell { width: 90px; }
+  .rank-bar { height: 12px; background: #2a78d6; border-radius: 0 4px 4px 0; }
+
+  /* 足跡覆蓋 */
+  #coverageCard { width: 660px; }
+  .cov-summary { display: flex; gap: 24px; margin-bottom: 20px; }
+  .cov-summary .cov-stat .num { font-size: 32px; font-weight: 600; color: #0b0b0b; line-height: 1.1; }
+  .cov-summary .cov-stat .num .of { font-size: 16px; font-weight: 400; color: #898781; }
+  .cov-summary .cov-stat .lbl { font-size: 12px; color: #52514e; }
+  .cov-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .cov-item {
+    border: 1px solid #e1e0d9; border-radius: 6px; padding: 8px 10px; font-size: 12px;
+  }
+  .cov-item.visited { cursor: pointer; }
+  .cov-item.visited:hover { background: #e8f0fe; }
+  .cov-item.not-visited { background: #f5f5f3; border-style: dashed; color: #b5b3ac; }
+  .cov-item .cov-name { font-weight: 600; color: #0b0b0b; margin-bottom: 2px; }
+  .cov-item.not-visited .cov-name { color: #b5b3ac; font-weight: 400; }
+  .cov-item .cov-meta { color: #898781; font-size: 11px; }
+  .cov-detail {
+    margin-top: 16px; border-top: 1px solid #e1e0d9; padding-top: 12px;
+  }
+  .cov-detail h4 { margin: 0 0 8px; font-size: 13px; color: #0b0b0b; }
 </style>
 </head>
 <body>
@@ -212,6 +260,8 @@
   <button class="tool-btn" id="reviewBtn">年度回顧</button>
   <button class="tool-btn" id="commuteBtn">通勤分析</button>
   <button class="tool-btn" id="rhythmBtn">時間分布</button>
+  <button class="tool-btn" id="topPlacesBtn">常去地點</button>
+  <button class="tool-btn" id="coverageBtn">足跡覆蓋</button>
 
   <span id="status">載入中...</span>
 </div>
@@ -263,6 +313,37 @@
       <button id="rhythmClose" class="close-btn">關閉</button>
     </div>
     <div id="rhythmBody"></div>
+  </div>
+</div>
+
+<div id="coverageOverlay" class="modal-overlay" hidden>
+  <div class="modal-card" id="coverageCard">
+    <div class="modal-header">
+      <h3>足跡覆蓋</h3>
+      <select id="coverageYear"></select>
+      <button id="coverageClose" class="close-btn">關閉</button>
+    </div>
+    <div id="coverageBody"></div>
+  </div>
+</div>
+
+<div id="topPlacesOverlay" class="modal-overlay" hidden>
+  <div class="modal-card" id="topPlacesCard">
+    <div class="modal-header">
+      <button id="topPlacesPrevYear">◀</button>
+      <h3 id="topPlacesTitle"></h3>
+      <button id="topPlacesNextYear">▶</button>
+      <button id="topPlacesClose" class="close-btn">關閉</button>
+    </div>
+    <div class="rank-controls">
+      <span>排序方式</span>
+      <div class="seg">
+        <button id="sortByCount" class="active">造訪次數</button>
+        <button id="sortByHours">停留時數</button>
+      </div>
+      <label><input type="checkbox" id="excludePinned"> 排除住家/公司</label>
+    </div>
+    <div id="topPlacesBody"></div>
   </div>
 </div>
 <div id="sharedTooltip" hidden></div>
@@ -1074,6 +1155,217 @@ async function renderRhythm(year) {
   });
 }
 
+let coverageData = null;
+
+function renderCoverage() {
+  const body = document.getElementById('coverageBody');
+  if (!coverageData) {
+    body.innerHTML = '<div class="review-empty">資料載入中...</div>';
+    return;
+  }
+
+  const year = document.getElementById('coverageYear').value;  // '' = 全部年份
+  const regions = Object.values(coverageData.regions);
+
+  // 依所選年份取出該年有去過的區域及其統計
+  const stat = (r) => {
+    if (!year) {
+      const visits = Object.values(r.byYear).reduce((s, y) => s + y.visits, 0);
+      return { visited: true, places: r.placeCount, visits, first: r.firstDate, last: r.lastDate };
+    }
+    const y = r.byYear[year];
+    return y ? { visited: true, places: y.places, visits: y.visits } : { visited: false };
+  };
+
+  const twRegions = new Map(regions.filter(r => r.country === '臺灣').map(r => [r.name, r]));
+  const abroad = regions.filter(r => r.country !== '臺灣');
+
+  const twVisited = coverageData.taiwanCities.filter(c => {
+    const r = twRegions.get(c);
+    return r && stat(r).visited;
+  });
+  const abroadVisited = abroad.filter(r => stat(r).visited);
+
+  const twItems = coverageData.taiwanCities.map(city => {
+    const r = twRegions.get(city);
+    const s = r ? stat(r) : { visited: false };
+    if (!s.visited) {
+      return `<div class="cov-item not-visited"><div class="cov-name">${city}</div><div class="cov-meta">還沒去過</div></div>`;
+    }
+    return `
+      <div class="cov-item visited" data-key="${escapeAttr(r.country + '|' + r.name)}">
+        <div class="cov-name">${city}</div>
+        <div class="cov-meta">${s.places} 個地點・${s.visits} 次</div>
+      </div>
+    `;
+  }).join('');
+
+  const abroadItems = abroadVisited
+    .sort((a, b) => stat(b).places - stat(a).places)
+    .map(r => {
+      const s = stat(r);
+      return `
+        <div class="cov-item visited" data-key="${escapeAttr(r.country + '|' + r.name)}">
+          <div class="cov-name">${r.name}</div>
+          <div class="cov-meta">${s.places} 個地點・${s.visits} 次</div>
+        </div>
+      `;
+    }).join('') || '<div class="review-empty">這段期間沒有出國記錄</div>';
+
+  body.innerHTML = `
+    <div class="cov-summary">
+      <div class="cov-stat">
+        <div class="num">${twVisited.length}<span class="of"> / ${coverageData.taiwanCities.length}</span></div>
+        <div class="lbl">台灣縣市</div>
+      </div>
+      <div class="cov-stat">
+        <div class="num">${abroadVisited.length}</div>
+        <div class="lbl">造訪過的國家（不含台灣）</div>
+      </div>
+    </div>
+
+    <div class="review-section">
+      <h4>台灣</h4>
+      <div class="cov-grid">${twItems}</div>
+    </div>
+
+    <div class="review-section">
+      <h4>國外</h4>
+      <div class="cov-grid">${abroadItems}</div>
+    </div>
+
+    <div class="cov-detail" id="covDetail" hidden></div>
+  `;
+
+  body.querySelectorAll('.cov-item.visited').forEach(item => {
+    item.addEventListener('click', () => showRegionDetail(item.dataset.key));
+  });
+}
+
+function showRegionDetail(key) {
+  const r = coverageData.regions[key];
+  if (!r) return;
+  const detail = document.getElementById('covDetail');
+
+  const rows = r.topPlaces.map((p, i) => `
+    <div class="place-row" data-place-id="${escapeAttr(p.placeId)}" data-lat="${p.lat}" data-lon="${p.lon}">
+      <span class="rank">${i + 1}</span>
+      <span class="place-name">${escapeAttr(p.name)}</span>
+      <span class="place-count">${p.visits} 次</span>
+    </div>
+  `).join('');
+
+  detail.innerHTML = `
+    <h4>${r.name}　<span style="font-weight:normal;color:#898781;font-size:12px">
+      ${r.placeCount} 個地點・${r.firstDate} 起至 ${r.lastDate}</span></h4>
+    ${rows}
+  `;
+  detail.hidden = false;
+
+  detail.querySelectorAll('.place-row').forEach(row => {
+    row.addEventListener('click', () => {
+      // 用搜尋索引查出這個地點實際出現過的月份，才不會跳到沒有它的月份
+      const indexed = searchIndexData.find(p => p.placeId === row.dataset.placeId);
+      document.getElementById('coverageOverlay').hidden = true;
+      goToPlace({
+        lat: parseFloat(row.dataset.lat),
+        lon: parseFloat(row.dataset.lon),
+        months: indexed ? indexed.months : indexData.months,
+      });
+    });
+  });
+  detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+let topPlacesYear = null;
+let topPlacesSort = 'count';  // 'count' 或 'hours'
+
+async function renderTopPlaces(year) {
+  topPlacesYear = year;
+  document.getElementById('topPlacesTitle').textContent = `${year} 年常去地點`;
+
+  const years = indexData.years;
+  document.getElementById('topPlacesPrevYear').disabled = years.indexOf(year) <= 0;
+  document.getElementById('topPlacesNextYear').disabled = years.indexOf(year) >= years.length - 1;
+
+  const body = document.getElementById('topPlacesBody');
+  body.innerHTML = '<div class="review-empty">統計中...</div>';
+
+  if (!yearCache[year]) {
+    const res = await fetch(`data/${year}.geojson`);
+    yearCache[year] = await res.json();
+  }
+
+  const places = {};
+  yearCache[year].features.forEach(f => {
+    const p = f.properties;
+    if (p.type !== 'visit' || !p.placeId) return;
+    if (!places[p.placeId]) {
+      places[p.placeId] = {
+        name: p.placeName || p.semanticType || '未知地點',
+        pinned: !!p.pinSource,
+        coords: f.geometry.coordinates,
+        count: 0,
+        minutes: 0,
+      };
+    }
+    places[p.placeId].count += 1;
+    places[p.placeId].minutes += (new Date(p.endTime) - new Date(p.startTime)) / 60000;
+  });
+
+  const excludePinned = document.getElementById('excludePinned').checked;
+  let rows = Object.values(places);
+  if (excludePinned) rows = rows.filter(r => !r.pinned);
+
+  rows.sort((a, b) => (topPlacesSort === 'count' ? b.count - a.count : b.minutes - a.minutes));
+  rows = rows.slice(0, 20);
+
+  if (!rows.length) {
+    body.innerHTML = '<div class="review-empty">這一年沒有符合條件的停留記錄</div>';
+    return;
+  }
+
+  const maxVal = topPlacesSort === 'count' ? rows[0].count : rows[0].minutes;
+
+  const html = rows.map((r, i) => {
+    const val = topPlacesSort === 'count' ? r.count : r.minutes;
+    return `
+      <tr class="clickable" data-lat="${r.coords[1]}" data-lon="${r.coords[0]}">
+        <td class="rank-no">${i + 1}</td>
+        <td>${r.pinned ? '<span class="pin-mark"></span>' : ''}${escapeAttr(r.name)}</td>
+        <td class="rank-bar-cell"><div class="rank-bar" style="width:${Math.max(4, (val / maxVal) * 100)}%"></div></td>
+        <td class="num">${r.count} 次</td>
+        <td class="num">${fmtNum(r.minutes / 60)} 小時</td>
+        <td class="num">${minutesText(r.minutes / r.count)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  body.innerHTML = `
+    <table class="rank-table">
+      <tr>
+        <th></th><th>地點</th><th></th>
+        <th style="text-align:right">造訪次數</th>
+        <th style="text-align:right">總停留</th>
+        <th style="text-align:right">平均每次</th>
+      </tr>
+      ${html}
+    </table>
+    <div id="calendarFootnote">綠色菱形代表住家/公司或已釘選的常用地點。點任一列跳到該地點的地圖。</div>
+  `;
+
+  body.querySelectorAll('tr.clickable').forEach(row => {
+    row.addEventListener('click', () => {
+      document.getElementById('topPlacesOverlay').hidden = true;
+      goToPlace({
+        lat: parseFloat(row.dataset.lat),
+        lon: parseFloat(row.dataset.lon),
+        months: indexData.months.filter(m => m.startsWith(year)),
+      });
+    });
+  });
+}
+
 async function goToDay(year, month, day) {
   const monthKey = `${year}-${month}`;
   document.getElementById('calendarOverlay').hidden = true;
@@ -1238,6 +1530,10 @@ async function init() {
   fetch('data/search_index.json').then(r => r.json()).then(data => { searchIndexData = data; });
   fetch('data/daily_stats.json').then(r => r.json()).then(data => { dailyStats = data; });
   fetch('data/commutes.json').then(r => r.json()).then(data => { commuteData = data; });
+  fetch('data/coverage.json').then(r => r.json()).then(data => {
+    coverageData = data;
+    if (!document.getElementById('coverageOverlay').hidden) renderCoverage();
+  });
 
   const calOverlay = document.getElementById('calendarOverlay');
   document.getElementById('calendarBtn').addEventListener('click', () => {
@@ -1310,6 +1606,51 @@ async function init() {
     const i = indexData.years.indexOf(rhythmYear);
     if (i < indexData.years.length - 1) renderRhythm(indexData.years[i + 1]);
   });
+
+  const coverageOverlay = document.getElementById('coverageOverlay');
+  const coverageYearSelect = document.getElementById('coverageYear');
+  coverageYearSelect.innerHTML = '<option value="">全部年份</option>' +
+    indexData.years.map(y => `<option value="${y}">${y} 年</option>`).join('');
+  document.getElementById('coverageBtn').addEventListener('click', () => {
+    coverageOverlay.hidden = false;
+    renderCoverage();
+  });
+  document.getElementById('coverageClose').addEventListener('click', () => { coverageOverlay.hidden = true; });
+  coverageOverlay.addEventListener('click', (e) => {
+    if (e.target === coverageOverlay) coverageOverlay.hidden = true;
+  });
+  coverageYearSelect.addEventListener('change', renderCoverage);
+
+  const topPlacesOverlay = document.getElementById('topPlacesOverlay');
+  document.getElementById('topPlacesBtn').addEventListener('click', () => {
+    topPlacesOverlay.hidden = false;
+    renderTopPlaces(yearSelect.value);
+  });
+  document.getElementById('topPlacesClose').addEventListener('click', () => { topPlacesOverlay.hidden = true; });
+  topPlacesOverlay.addEventListener('click', (e) => {
+    if (e.target === topPlacesOverlay) topPlacesOverlay.hidden = true;
+  });
+  document.getElementById('topPlacesPrevYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(topPlacesYear);
+    if (i > 0) renderTopPlaces(indexData.years[i - 1]);
+  });
+  document.getElementById('topPlacesNextYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(topPlacesYear);
+    if (i < indexData.years.length - 1) renderTopPlaces(indexData.years[i + 1]);
+  });
+  document.getElementById('sortByCount').addEventListener('click', () => {
+    topPlacesSort = 'count';
+    document.getElementById('sortByCount').classList.add('active');
+    document.getElementById('sortByHours').classList.remove('active');
+    renderTopPlaces(topPlacesYear);
+  });
+  document.getElementById('sortByHours').addEventListener('click', () => {
+    topPlacesSort = 'hours';
+    document.getElementById('sortByHours').classList.add('active');
+    document.getElementById('sortByCount').classList.remove('active');
+    renderTopPlaces(topPlacesYear);
+  });
+  document.getElementById('excludePinned').addEventListener('change', () => renderTopPlaces(topPlacesYear));
 
   const searchInput = document.getElementById('searchInput');
   const searchResults = document.getElementById('searchResults');

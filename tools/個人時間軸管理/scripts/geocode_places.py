@@ -36,6 +36,12 @@ USER_AGENT = "ivan-porject-personal-timeline-map/1.0 (local personal use, non-co
 LANDMARK_TAGS = ["amenity", "shop", "office", "tourism", "leisure", "craft"]
 LANDMARK_RADIUS_M = 50
 
+# Overpass 是免費公用服務，塞車時單一查詢可能卡很久。與其苦等，不如快速放棄、
+# 讓那筆先用 Nominatim 的地址保底並標記起來，之後服務順暢時再用 --retry-failed 補查。
+OVERPASS_SERVER_TIMEOUT = 6   # 給 Overpass 伺服器的查詢執行上限（秒）
+OVERPASS_CLIENT_TIMEOUT = 8   # 我方等待回應的上限（含排隊時間）
+OVERPASS_RETRIES = 0          # 塞車時重試只會拖慢整批，改成不重試
+
 # 這些分類雖然有掛 name，但對「這是哪裡」沒什麼意義（廁所、停車格、垃圾桶等），
 # 找地標時直接排除，避免把有意義的名稱（例如已經精準比對到的店名）蓋掉。
 EXCLUDE_TAG_VALUES = {
@@ -108,12 +114,12 @@ def find_nearby_landmark(lat, lon, radius=LANDMARK_RADIUS_M):
     for tag in LANDMARK_TAGS:
         clauses.append(f'node(around:{radius},{lat},{lon})["{tag}"]["name"];')
         clauses.append(f'way(around:{radius},{lat},{lon})["{tag}"]["name"];')
-    query = f'[out:json][timeout:25];({"".join(clauses)});out center;'
+    query = f'[out:json][timeout:{OVERPASS_SERVER_TIMEOUT}];({"".join(clauses)});out center;'
 
     req = urllib.request.Request(
         OVERPASS_URL, data=query.encode("utf-8"), headers={"User-Agent": USER_AGENT}
     )
-    with urllib.request.urlopen(req, timeout=25) as resp:
+    with urllib.request.urlopen(req, timeout=OVERPASS_CLIENT_TIMEOUT) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     best_name, best_dist = None, None
@@ -134,7 +140,7 @@ def find_nearby_landmark(lat, lon, radius=LANDMARK_RADIUS_M):
     return best_name
 
 
-def find_nearby_landmark_with_retry(lat, lon, retries=2):
+def find_nearby_landmark_with_retry(lat, lon, retries=OVERPASS_RETRIES):
     """Overpass 公共伺服器偶爾會逾時/塞車，失敗時重試幾次再放棄，
     避免把「查詢失敗」誤判成「真的沒有地標」。"""
     last_error = None
@@ -148,9 +154,15 @@ def find_nearby_landmark_with_retry(lat, lon, retries=2):
     return None, last_error
 
 
-def geocode_one(lat, lon):
+def geocode_one(lat, lon, skip_landmark=False):
     result = reverse_geocode(lat, lon)
     time.sleep(1.1)  # Nominatim 限速
+
+    if skip_landmark and not result["hadOwnName"]:
+        # Overpass 不通時的降級模式：先用地址保底，標記起來之後用 --retry-failed 補查地標
+        result["source"] = "address"
+        result["landmarkQueryFailed"] = True
+        return result
 
     if result["hadOwnName"]:
         # Nominatim 反查已經精準比對到具體名稱（座標就落在那個地點上），
@@ -181,6 +193,10 @@ def main():
     parser.add_argument(
         "--retry-failed", action="store_true",
         help="只重查上次「地標查詢失敗」（Overpass 逾時/塞車）的地點，不動其他已成功的快取",
+    )
+    parser.add_argument(
+        "--no-landmark", action="store_true",
+        help="跳過 Overpass 地標搜尋，只用 Nominatim 查地址（Overpass 掛掉時用；查過的會標記起來，之後可用 --retry-failed 補查地標）",
     )
     args = parser.parse_args()
 
@@ -221,7 +237,7 @@ def main():
     for i, pid in enumerate(todo, 1):
         lat, lon = places[pid]
         try:
-            result = geocode_one(lat, lon)
+            result = geocode_one(lat, lon, skip_landmark=args.no_landmark)
             cache[pid] = result
             tag = {"landmark": "地標", "nominatim_name": "反查店名", "address": "地址"}.get(result["source"], result["source"])
             if result.get("landmarkQueryFailed"):

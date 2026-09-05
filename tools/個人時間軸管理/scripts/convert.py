@@ -18,6 +18,7 @@
   ../data/search_index.json（地點搜尋索引：每個地點名稱 + 座標 + 出現過的月份）
   ../data/daily_stats.json（月曆熱力圖用：每天的移動距離與停留點筆數）
   ../data/commutes.json（通勤分析用：住家↔公司之間每一趟的耗時、距離、交通方式）
+  ../data/coverage.json（足跡覆蓋用：去過哪些縣市/國家、各去過幾個地點）
 """
 import json
 import re
@@ -145,6 +146,102 @@ def timeline_path_to_feature(seg):
             "endTime": seg["endTime"],
         },
     }
+
+
+TAIWAN_CITIES = [
+    "臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市",
+    "基隆市", "新竹市", "嘉義市",
+    "新竹縣", "苗栗縣", "彰化縣", "南投縣", "雲林縣", "嘉義縣",
+    "屏東縣", "宜蘭縣", "花蓮縣", "臺東縣", "澎湖縣", "金門縣", "連江縣",
+]
+
+# OSM 的國名有時是簡體、或用 ; / 併列多種寫法，統一成繁體單一名稱
+COUNTRY_ALIASES = {"中国": "中國", "韩国": "南韓", "泰国": "泰國", "日本国": "日本"}
+
+
+def normalize_country(raw):
+    name = raw
+    for sep in (";", "/"):
+        if sep in name:
+            name = name.split(sep)[-1]
+    name = name.strip()
+    return COUNTRY_ALIASES.get(name, name)
+
+
+def parse_region(display_name):
+    """從 Nominatim 的完整地址字串解析出（國家, 縣市）。
+    國外地點沒有可靠的次級行政區可解析，縣市就用國名代替。"""
+    if not display_name:
+        return None, None
+    parts = [p.strip() for p in display_name.split(",")]
+    country = normalize_country(parts[-1]) if parts else None
+    if country != "臺灣":
+        return country, country
+    normalized = display_name.replace("台", "臺")
+    for city in TAIWAN_CITIES:
+        if city in normalized:
+            return country, city
+    return country, None
+
+
+def build_coverage(all_features, place_names):
+    """統計去過哪些縣市/國家，以及各自的地點數、造訪次數、停留時間、起訖日期。"""
+    regions = {}
+    for f in all_features:
+        p = f["properties"]
+        if p["type"] != "visit" or not p.get("placeId"):
+            continue
+        country, region = parse_region(place_names.get(p["placeId"], {}).get("displayName"))
+        if not region:
+            continue
+
+        key = f"{country}|{region}"
+        entry = regions.setdefault(key, {
+            "country": country, "name": region,
+            "placeIds": set(), "firstDate": None, "lastDate": None,
+            "byYear": {}, "placeStats": {},
+        })
+
+        dt = parse_time(p["startTime"]).astimezone()
+        date_str = f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
+        year = f"{dt.year:04d}"
+        minutes = (parse_time(p["endTime"]) - parse_time(p["startTime"])).total_seconds() / 60
+
+        entry["placeIds"].add(p["placeId"])
+        if entry["firstDate"] is None or date_str < entry["firstDate"]:
+            entry["firstDate"] = date_str
+        if entry["lastDate"] is None or date_str > entry["lastDate"]:
+            entry["lastDate"] = date_str
+
+        y = entry["byYear"].setdefault(year, {"visits": 0, "minutes": 0.0, "placeIds": set()})
+        y["visits"] += 1
+        y["minutes"] += minutes
+        y["placeIds"].add(p["placeId"])
+
+        lon, lat = f["geometry"]["coordinates"]
+        ps = entry["placeStats"].setdefault(p["placeId"], {
+            "placeId": p["placeId"],
+            "name": p.get("placeName") or p.get("semanticType") or "未知地點",
+            "lat": lat, "lon": lon, "visits": 0,
+        })
+        ps["visits"] += 1
+
+    out = {}
+    for key, e in regions.items():
+        top_places = sorted(e["placeStats"].values(), key=lambda x: -x["visits"])[:5]
+        out[key] = {
+            "country": e["country"],
+            "name": e["name"],
+            "placeCount": len(e["placeIds"]),
+            "firstDate": e["firstDate"],
+            "lastDate": e["lastDate"],
+            "topPlaces": top_places,
+            "byYear": {
+                y: {"visits": v["visits"], "minutes": round(v["minutes"]), "places": len(v["placeIds"])}
+                for y, v in sorted(e["byYear"].items())
+            },
+        }
+    return {"regions": out, "taiwanCities": TAIWAN_CITIES}
 
 
 HOME_TYPES = {"Home"}
@@ -360,6 +457,11 @@ def main():
     with open(OUTPUT_DIR / "commutes.json", "w", encoding="utf-8") as f:
         json.dump(commutes, f, ensure_ascii=False)
     print(f"通勤趟次：{len(commutes)} 趟")
+
+    coverage = build_coverage(all_features, place_names)
+    with open(OUTPUT_DIR / "coverage.json", "w", encoding="utf-8") as f:
+        json.dump(coverage, f, ensure_ascii=False)
+    print(f"足跡覆蓋：{len(coverage['regions'])} 個縣市/國家")
 
     print(f"完成。共 {len(years)} 年、{len(months)} 個月份，略過 {skipped} 筆無法解析的記錄，隱藏 {excluded_count} 筆記錄。")
     print(f"輸出目錄：{OUTPUT_DIR}")
