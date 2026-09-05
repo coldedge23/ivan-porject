@@ -8,9 +8,17 @@ desktop.ini
 *.key
 credentials.*
 
+# 個人足跡原始資料（隱私，不上雲）
+tools/個人時間軸管理/location-history.json
+tools/個人時間軸管理/data/
+
 # Claude Code 本地設定（含 permissions、可能記錄 token，絕不上雲）
 .claude/
 
 # Node.js
 node_modules/
 package-lock.json
+
+# Python
+__pycache__/
+*.pyc

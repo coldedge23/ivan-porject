@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>個人時間軸地圖</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<style>
+  html, body { margin: 0; height: 100%; font-family: "Microsoft JhengHei", "PingFang TC", sans-serif; }
+  #map { position: absolute; top: 56px; bottom: 0; left: 0; right: 0; }
+  #toolbar {
+    height: 56px; display: flex; align-items: center; gap: 12px;
+    padding: 0 16px; background: #1f2933; color: #fff; box-sizing: border-box;
+  }
+  #toolbar label { font-size: 14px; }
+  #toolbar select, #toolbar input[type="checkbox"] { font-size: 14px; }
+  #status { margin-left: auto; font-size: 13px; color: #9aa5b1; }
+  .leaflet-popup-content { font-size: 13px; line-height: 1.5; }
+  .legend {
+    position: absolute; bottom: 24px; right: 12px; background: #fff;
+    padding: 8px 12px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    font-size: 12px; z-index: 1000;
+  }
+  .legend span { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: middle; border-radius: 50%; }
+  .legend span.diamond { border-radius: 2px; transform: rotate(45deg); width: 10px; height: 10px; margin-left: 1px; margin-right: 7px; }
+
+  /* 常用地點標記：菱形 + 綠色，形狀與顏色雙重區隔，不參與叢集所以永遠看得見 */
+  .pinned-marker {
+    width: 14px; height: 14px; background: #008300; border: 2px solid #fff;
+    border-radius: 2px; transform: rotate(45deg); box-shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+  .popup-actions { margin-top: 6px; display: flex; gap: 6px; }
+  .popup-actions button {
+    font-size: 12px; padding: 3px 8px; border: 1px solid #ccc; border-radius: 4px;
+    background: #f5f5f5; cursor: pointer;
+  }
+  .popup-actions button:hover { background: #e8f0fe; }
+  .popup-actions button:disabled { opacity: 0.6; cursor: default; }
+
+  #searchBox { position: relative; }
+  #searchInput {
+    font-size: 14px; padding: 4px 8px; border-radius: 4px; border: 1px solid #4b5563;
+    width: 200px; background: #2d3844; color: #fff;
+  }
+  #searchInput::placeholder { color: #9aa5b1; }
+  #searchResults {
+    position: absolute; top: 32px; left: 0; width: 260px; background: #fff; color: #1f2933;
+    border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.3); max-height: 300px; overflow-y: auto;
+    z-index: 2000; font-size: 13px;
+  }
+  #searchResults div { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #eee; }
+  #searchResults div:hover { background: #e8f0fe; }
+  #searchResults .no-result { color: #9aa5b1; cursor: default; }
+  #searchResults .no-result:hover { background: none; }
+
+  .stats-panel {
+    position: absolute; bottom: 24px; left: 12px; background: #fff;
+    padding: 10px 14px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    font-size: 12px; z-index: 1000; min-width: 180px;
+  }
+  .stats-panel h4 { margin: 0 0 6px; font-size: 13px; }
+  .stats-panel table { border-collapse: collapse; width: 100%; }
+  .stats-panel td { padding: 2px 4px 2px 0; }
+  .stats-panel td.num { text-align: right; white-space: nowrap; }
+  .stats-panel .total { font-weight: bold; border-top: 1px solid #ddd; }
+
+  #toolbar button.tool-btn {
+    font-size: 14px; padding: 4px 12px; border-radius: 4px; border: 1px solid #4b5563;
+    background: #2d3844; color: #fff; cursor: pointer;
+  }
+  #toolbar button.tool-btn:hover { background: #3d4b5c; }
+
+  /* 彈出視窗（月曆、年度回顧共用） */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 3000;
+  }
+  .modal-overlay[hidden] { display: none; }  /* display:flex 會蓋掉 hidden 屬性，要明確關掉 */
+  .modal-card {
+    background: #fcfcfb; border-radius: 8px; padding: 20px 24px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.35); max-height: 90vh; overflow: auto;
+  }
+  .modal-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .modal-header h3 { margin: 0; font-size: 16px; color: #0b0b0b; }
+  .modal-header button {
+    font-size: 14px; padding: 2px 10px; border: 1px solid #c3c2b7; border-radius: 4px;
+    background: #fff; cursor: pointer;
+  }
+  .modal-header button:hover:not(:disabled) { background: #f0efec; }
+  .modal-header button:disabled { opacity: .4; cursor: default; }
+  .modal-header .close-btn { margin-left: auto; }
+
+  #calendarGrid { display: grid; grid-template-columns: 36px repeat(31, 18px); gap: 3px; }
+  #calendarGrid .month-label {
+    font-size: 11px; color: #52514e; text-align: right; padding-right: 4px;
+    line-height: 18px; white-space: nowrap;
+  }
+  #calendarGrid .day-header { font-size: 10px; color: #898781; text-align: center; line-height: 14px; }
+  #calendarGrid .cell { width: 18px; height: 18px; border-radius: 2px; }
+  #calendarGrid .cell.has-data { cursor: pointer; }
+  #calendarGrid .cell.has-data:hover { outline: 2px solid #0b0b0b; outline-offset: 1px; }
+  #calendarGrid .cell.blank { background: none; }
+
+  #calendarLegend {
+    display: flex; align-items: center; gap: 6px; margin-top: 16px;
+    font-size: 11px; color: #52514e;
+  }
+  #calendarLegend .swatch { width: 18px; height: 18px; border-radius: 2px; }
+  #calendarFootnote { margin-top: 8px; font-size: 11px; color: #898781; }
+
+  #sharedTooltip {
+    position: fixed; background: #0b0b0b; color: #fff; padding: 6px 10px;
+    border-radius: 4px; font-size: 12px; line-height: 1.5; pointer-events: none;
+    z-index: 3100; white-space: nowrap;
+  }
+
+  /* 年度回顧 */
+  #reviewCard { width: 620px; }
+  .review-hero { margin-bottom: 20px; }
+  .review-hero .hero-label { font-size: 13px; color: #52514e; }
+  .review-hero .hero-value { font-size: 48px; font-weight: 600; color: #0b0b0b; line-height: 1.1; }
+  .review-hero .hero-unit { font-size: 20px; font-weight: 400; color: #52514e; }
+
+  .review-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+  .review-tile { border: 1px solid #e1e0d9; border-radius: 6px; padding: 10px 12px; }
+  .review-tile .tile-label { font-size: 12px; color: #52514e; margin-bottom: 2px; }
+  .review-tile .tile-value { font-size: 20px; font-weight: 600; color: #0b0b0b; }
+  .review-tile .tile-sub { font-size: 11px; color: #898781; margin-top: 2px; }
+  .review-tile.clickable { cursor: pointer; }
+  .review-tile.clickable:hover { background: #f0efec; }
+
+  .review-section { margin-bottom: 24px; }
+  .review-section h4 { margin: 0 0 10px; font-size: 13px; color: #0b0b0b; }
+
+  .bar-row { display: grid; grid-template-columns: 72px 1fr 96px; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .bar-row .bar-label { font-size: 12px; color: #52514e; text-align: right; }
+  .bar-row .bar-track { height: 100%; }
+  .bar-row .bar-fill {
+    height: 14px; background: #2a78d6;
+    border-radius: 0 4px 4px 0;  /* 資料端圓角、基線端方角 */
+  }
+  .bar-row .bar-value { font-size: 12px; color: #52514e; font-variant-numeric: tabular-nums; }
+
+  .place-row {
+    display: grid; grid-template-columns: 20px 1fr 80px; align-items: center; gap: 8px;
+    padding: 5px 4px; font-size: 13px; cursor: pointer; border-radius: 4px;
+  }
+  .place-row:hover { background: #e8f0fe; }
+  .place-row .rank { color: #898781; font-size: 11px; }
+  .place-row .place-name { color: #0b0b0b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .place-row .place-count { color: #52514e; text-align: right; font-variant-numeric: tabular-nums; }
+  .review-empty { color: #898781; font-size: 12px; }
+
+  /* 通勤分析：出發時間分布用直立長條 */
+  #commuteCard { width: 620px; }
+  .hour-chart { display: flex; align-items: flex-end; gap: 2px; height: 90px; margin-bottom: 4px; }
+  .hour-chart .hour-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .hour-chart .hour-bar { background: #2a78d6; border-radius: 4px 4px 0 0; min-height: 1px; }
+  .hour-chart .hour-col.empty .hour-bar { background: #e1e0d9; }
+  .hour-axis { display: flex; gap: 2px; font-size: 10px; color: #898781; }
+  .hour-axis span { flex: 1; text-align: center; }
+  .commute-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .commute-table th {
+    text-align: left; font-weight: normal; color: #898781; font-size: 11px;
+    border-bottom: 1px solid #e1e0d9; padding: 0 8px 4px 0;
+  }
+  .commute-table td { padding: 5px 8px 5px 0; color: #0b0b0b; }
+  .commute-table td.num { text-align: right; font-variant-numeric: tabular-nums; color: #52514e; }
+
+  /* 時間分布：星期 × 時段熱力圖 */
+  #rhythmCard { width: 620px; }
+  #rhythmGrid { display: grid; grid-template-columns: 32px repeat(24, 1fr); gap: 2px; }
+  #rhythmGrid .row-label {
+    font-size: 11px; color: #52514e; text-align: right; padding-right: 4px; line-height: 18px;
+  }
+  #rhythmGrid .col-header { font-size: 10px; color: #898781; text-align: center; line-height: 14px; }
+  #rhythmGrid .rcell { height: 18px; border-radius: 2px; }
+  #rhythmGrid .rcell.has-data { cursor: default; }
+  #rhythmGrid .rcell.has-data:hover { outline: 2px solid #0b0b0b; outline-offset: 1px; }
+  #rhythmLegend {
+    display: flex; align-items: center; gap: 6px; margin-top: 12px;
+    font-size: 11px; color: #52514e;
+  }
+  #rhythmLegend .swatch { width: 18px; height: 18px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <label for="yearSelect">年</label>
+  <select id="yearSelect"></select>
+
+  <label for="monthSelect">月</label>
+  <select id="monthSelect"></select>
+
+  <label for="daySelect">日</label>
+  <select id="daySelect"></select>
+
+  <label><input type="checkbox" id="showVisit" checked> 停留點</label>
+  <label><input type="checkbox" id="showPinned" checked> 常用地點</label>
+  <label><input type="checkbox" id="showPath" checked> 移動軌跡</label>
+  <label><input type="checkbox" id="showActivity"> 移動段落</label>
+
+  <div id="searchBox">
+    <input type="text" id="searchInput" placeholder="搜尋地點名稱...">
+    <div id="searchResults" hidden></div>
+  </div>
+
+  <button class="tool-btn" id="calendarBtn">月曆檢視</button>
+  <button class="tool-btn" id="reviewBtn">年度回顧</button>
+  <button class="tool-btn" id="commuteBtn">通勤分析</button>
+  <button class="tool-btn" id="rhythmBtn">時間分布</button>
+
+  <span id="status">載入中...</span>
+</div>
+
+<div id="calendarOverlay" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <div class="modal-header">
+      <button id="calPrevYear">◀</button>
+      <h3 id="calTitle"></h3>
+      <button id="calNextYear">▶</button>
+      <button id="calendarClose" class="close-btn">關閉</button>
+    </div>
+    <div id="calendarGrid"></div>
+    <div id="calendarLegend"></div>
+    <div id="calendarFootnote">顏色深淺代表當天的移動距離。點任一格子跳到那天的地圖。</div>
+  </div>
+</div>
+
+<div id="reviewOverlay" class="modal-overlay" hidden>
+  <div class="modal-card" id="reviewCard">
+    <div class="modal-header">
+      <button id="reviewPrevYear">◀</button>
+      <h3 id="reviewTitle"></h3>
+      <button id="reviewNextYear">▶</button>
+      <button id="reviewClose" class="close-btn">關閉</button>
+    </div>
+    <div id="reviewBody"></div>
+  </div>
+</div>
+
+<div id="commuteOverlay" class="modal-overlay" hidden>
+  <div class="modal-card" id="commuteCard">
+    <div class="modal-header">
+      <button id="commutePrevYear">◀</button>
+      <h3 id="commuteTitle"></h3>
+      <button id="commuteNextYear">▶</button>
+      <button id="commuteClose" class="close-btn">關閉</button>
+    </div>
+    <div id="commuteBody"></div>
+  </div>
+</div>
+
+<div id="rhythmOverlay" class="modal-overlay" hidden>
+  <div class="modal-card" id="rhythmCard">
+    <div class="modal-header">
+      <button id="rhythmPrevYear">◀</button>
+      <h3 id="rhythmTitle"></h3>
+      <button id="rhythmNextYear">▶</button>
+      <button id="rhythmClose" class="close-btn">關閉</button>
+    </div>
+    <div id="rhythmBody"></div>
+  </div>
+</div>
+<div id="sharedTooltip" hidden></div>
+<div id="map"></div>
+<div class="legend">
+  <div><span class="diamond" style="background:#008300"></span>常用地點（住家/公司/已釘選）</div>
+  <div><span style="background:#e63946"></span>停留點 (visit)</div>
+  <div><span style="background:#1d4ed8"></span>移動軌跡 (timelinePath)</div>
+  <div><span style="background:#f59e0b"></span>移動段落 (activity)</div>
+</div>
+<div class="stats-panel" id="statsPanel"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+const map = L.map('map').setView([25.033, 121.565], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors',
+  maxZoom: 19,
+}).addTo(map);
+
+const layers = {
+  visit: L.markerClusterGroup({ maxClusterRadius: 50 }).addTo(map),
+  // 常用地點刻意不做叢集，這樣不管縮放到哪個層級都看得到，不會被合併進數字圓圈
+  pinned: L.layerGroup().addTo(map),
+  timelinePath: L.layerGroup().addTo(map),
+  activity: L.layerGroup(),
+};
+
+const pinnedIcon = L.divIcon({
+  className: '',
+  html: '<div class="pinned-marker"></div>',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+  popupAnchor: [0, -9],
+});
+
+const yearSelect = document.getElementById('yearSelect');
+const monthSelect = document.getElementById('monthSelect');
+const daySelect = document.getElementById('daySelect');
+const statusEl = document.getElementById('status');
+
+const monthCache = {};
+const yearCache = {};
+let indexData = null;
+let currentMonthKey = null; // 有值代表目前在月/日視圖；null 代表在年視圖
+
+function localDay(iso) {
+  const d = new Date(iso);
+  return String(d.getDate()).padStart(2, '0');
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('zh-TW', { hour12: false });
+}
+
+function durationText(startIso, endIso) {
+  const ms = new Date(endIso) - new Date(startIso);
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `${min} 分鐘`;
+  return `${Math.floor(min / 60)} 小時 ${min % 60} 分鐘`;
+}
+
+const ACTIVITY_LABELS = {
+  'in passenger vehicle': '開車',
+  'walking': '走路',
+  'in bus': '公車',
+  'in subway': '捷運',
+  'motorcycling': '機車',
+  'in train': '火車',
+  'cycling': '自行車',
+  'flying': '飛機',
+  'in ferry': '渡輪',
+  'in tram': '電車',
+  'unknown': '未知方式',
+};
+
+function activityLabel(type) {
+  return ACTIVITY_LABELS[type] || type || '未知方式';
+}
+
+function renderStats(geojson) {
+  const byType = {};
+  let totalMeters = 0;
+
+  geojson.features.forEach(f => {
+    if (f.properties.type !== 'activity') return;
+    const type = f.properties.activityType || 'unknown';
+    const dist = parseFloat(f.properties.distanceMeters) || 0;
+    if (!byType[type]) byType[type] = { count: 0, meters: 0 };
+    byType[type].count += 1;
+    byType[type].meters += dist;
+    totalMeters += dist;
+  });
+
+  const panel = document.getElementById('statsPanel');
+  const rows = Object.entries(byType)
+    .sort((a, b) => b[1].meters - a[1].meters)
+    .map(([type, v]) => `
+      <tr>
+        <td>${activityLabel(type)}</td>
+        <td class="num">${(v.meters / 1000).toFixed(1)} km</td>
+        <td class="num">${v.count} 次</td>
+      </tr>
+    `).join('');
+
+  if (!rows) {
+    panel.innerHTML = '<h4>移動統計</h4>這個範圍沒有移動段落記錄';
+    return;
+  }
+
+  panel.innerHTML = `
+    <h4>移動統計</h4>
+    <table>
+      ${rows}
+      <tr class="total">
+        <td>總計</td>
+        <td class="num">${(totalMeters / 1000).toFixed(1)} km</td>
+        <td class="num"></td>
+      </tr>
+    </table>
+  `;
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function popupForVisit(props) {
+  const title = props.placeName || props.semanticType || '未知地點';
+
+  let pinControl;
+  if (props.pinSource === 'auto') {
+    pinControl = `<span style="color:#008300">★ 常用地點（Google 判定為 ${props.semanticType}）</span>`;
+  } else {
+    const label = props.pinSource === 'manual' ? '取消釘選' : '釘選為常用地點';
+    pinControl = `<button class="btn-toggle-pin" data-place-id="${escapeAttr(props.placeId)}">${label}</button>`;
+  }
+
+  return `
+    <b>${title}</b><br>
+    類型：${props.semanticType || '未知'}<br>
+    開始：${fmtTime(props.startTime)}<br>
+    結束：${fmtTime(props.endTime)}<br>
+    停留：${durationText(props.startTime, props.endTime)}
+    <div class="popup-actions">
+      <button class="btn-fix-name" data-place-id="${escapeAttr(props.placeId)}" data-current-name="${escapeAttr(title)}">修正名稱</button>
+      <button class="btn-hide-visit" data-place-id="${escapeAttr(props.placeId)}" data-start-time="${escapeAttr(props.startTime)}">隱藏這筆</button>
+    </div>
+    <div class="popup-actions">${pinControl}</div>
+  `;
+}
+
+function popupForActivity(props) {
+  const dist = props.distanceMeters ? `${Math.round(parseFloat(props.distanceMeters))} 公尺` : '未知';
+  return `
+    <b>移動段落</b><br>
+    方式：${props.activityType || '未知'}<br>
+    距離：${dist}<br>
+    開始：${fmtTime(props.startTime)}<br>
+    結束：${fmtTime(props.endTime)}
+  `;
+}
+
+function popupForPath(props) {
+  return `
+    <b>移動軌跡</b><br>
+    開始：${fmtTime(props.startTime)}<br>
+    結束：${fmtTime(props.endTime)}
+  `;
+}
+
+function renderGeoJSON(geojson) {
+  Object.values(layers).forEach(l => l.clearLayers());
+
+  const bounds = [];
+
+  geojson.features.forEach(f => {
+    const type = f.properties.type;
+    if (type === 'visit') {
+      const [lon, lat] = f.geometry.coordinates;
+      if (f.properties.pinSource) {
+        L.marker([lat, lon], { icon: pinnedIcon, zIndexOffset: 1000 })
+          .bindPopup(popupForVisit(f.properties))
+          .addTo(layers.pinned);
+      } else {
+        L.circleMarker([lat, lon], {
+          radius: 7, color: '#e63946', fillColor: '#e63946', fillOpacity: 0.8, weight: 1,
+        }).bindPopup(popupForVisit(f.properties)).addTo(layers.visit);
+      }
+      bounds.push([lat, lon]);
+    } else if (type === 'timelinePath') {
+      const latlngs = f.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      const line = L.polyline(latlngs, { color: '#1d4ed8', weight: 3, opacity: 0.7 })
+        .bindPopup(popupForPath(f.properties));
+      line.addTo(layers.timelinePath);
+      latlngs.forEach(ll => bounds.push(ll));
+    } else if (type === 'activity') {
+      const latlngs = f.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      const line = L.polyline(latlngs, { color: '#f59e0b', weight: 3, dashArray: '6,6', opacity: 0.8 })
+        .bindPopup(popupForActivity(f.properties));
+      line.addTo(layers.activity);
+      latlngs.forEach(ll => bounds.push(ll));
+    }
+  });
+
+  if (bounds.length) {
+    map.fitBounds(bounds, { padding: [30, 30] });
+  }
+  statusEl.textContent = `共 ${geojson.features.length} 筆記錄`;
+  renderStats(geojson);
+}
+
+function populateMonthSelect(year) {
+  monthSelect.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = '全年';
+  monthSelect.appendChild(allOpt);
+
+  indexData.months
+    .filter(m => m.startsWith(year))
+    .forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = `${parseInt(m.slice(5), 10)} 月`;
+      monthSelect.appendChild(opt);
+    });
+}
+
+function populateDaySelect(days) {
+  daySelect.innerHTML = '';
+  daySelect.disabled = false;
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = '全月';
+  daySelect.appendChild(allOpt);
+  days.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = `${parseInt(d, 10)} 日`;
+    daySelect.appendChild(opt);
+  });
+}
+
+function disableDaySelect() {
+  daySelect.innerHTML = '<option value="">—</option>';
+  daySelect.disabled = true;
+}
+
+async function loadYear(year) {
+  statusEl.textContent = '載入中...';
+  currentMonthKey = null;
+  disableDaySelect();
+  if (!yearCache[year]) {
+    const res = await fetch(`data/${year}.geojson`);
+    yearCache[year] = await res.json();
+  }
+  renderGeoJSON(yearCache[year]);
+}
+
+async function loadMonth(monthKey) {
+  statusEl.textContent = '載入中...';
+  currentMonthKey = monthKey;
+  if (!monthCache[monthKey]) {
+    const res = await fetch(`data/${monthKey}.geojson`);
+    monthCache[monthKey] = await res.json();
+  }
+  const geojson = monthCache[monthKey];
+
+  const days = [...new Set(geojson.features.map(f => localDay(f.properties.startTime)))].sort();
+  populateDaySelect(days);
+  daySelect.value = '';
+
+  renderGeoJSON(geojson);
+}
+
+function applyDayFilter() {
+  if (!currentMonthKey) return;
+  const geojson = monthCache[currentMonthKey];
+  const day = daySelect.value;
+  if (!day) {
+    renderGeoJSON(geojson);
+    return;
+  }
+  const filtered = {
+    type: 'FeatureCollection',
+    features: geojson.features.filter(f => localDay(f.properties.startTime) === day),
+  };
+  renderGeoJSON(filtered);
+}
+
+let searchIndexData = [];
+let dailyStats = {};
+let calendarYear = null;
+
+// 單一藍色相由淺到深的 sequential 色階；無資料用中性灰，不參與色階
+const CAL_NO_DATA = '#eeeeec';
+const CAL_LEVELS = [
+  { max: 5, color: '#cde2fb', label: '< 5' },
+  { max: 20, color: '#9ec5f4', label: '5-20' },
+  { max: 50, color: '#5598e7', label: '20-50' },
+  { max: 150, color: '#2a78d6', label: '50-150' },
+  { max: Infinity, color: '#184f95', label: '> 150' },
+];
+
+function calColor(km) {
+  return CAL_LEVELS.find(l => km < l.max).color;
+}
+
+function renderCalendar(year) {
+  calendarYear = year;
+  document.getElementById('calTitle').textContent = `${year} 年`;
+
+  const years = indexData.years;
+  document.getElementById('calPrevYear').disabled = years.indexOf(year) <= 0;
+  document.getElementById('calNextYear').disabled = years.indexOf(year) >= years.length - 1;
+
+  const grid = document.getElementById('calendarGrid');
+  grid.innerHTML = '';
+
+  // 第一列：日期表頭（每 5 天標一次，避免太擠）
+  grid.appendChild(document.createElement('div'));
+  for (let d = 1; d <= 31; d++) {
+    const h = document.createElement('div');
+    h.className = 'day-header';
+    h.textContent = (d === 1 || d % 5 === 0) ? d : '';
+    grid.appendChild(h);
+  }
+
+  const tooltip = document.getElementById('sharedTooltip');
+
+  for (let m = 1; m <= 12; m++) {
+    const label = document.createElement('div');
+    label.className = 'month-label';
+    label.textContent = `${m} 月`;
+    grid.appendChild(label);
+
+    const daysInMonth = new Date(parseInt(year, 10), m, 0).getDate();
+
+    for (let d = 1; d <= 31; d++) {
+      const cell = document.createElement('div');
+      if (d > daysInMonth) {
+        cell.className = 'cell blank';
+        grid.appendChild(cell);
+        continue;
+      }
+
+      const dateKey = `${year}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const stat = dailyStats[dateKey];
+      cell.className = 'cell';
+
+      if (!stat) {
+        cell.style.background = CAL_NO_DATA;
+      } else {
+        const km = stat.m / 1000;
+        cell.style.background = calColor(km);
+        cell.classList.add('has-data');
+
+        cell.addEventListener('mouseenter', (e) => {
+          tooltip.innerHTML = `${dateKey}<br>移動 ${km.toFixed(1)} km・停留點 ${stat.v} 個`;
+          tooltip.hidden = false;
+          const rect = e.target.getBoundingClientRect();
+          tooltip.style.left = `${rect.left}px`;
+          tooltip.style.top = `${rect.bottom + 6}px`;
+        });
+        cell.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+        cell.addEventListener('click', () => {
+          tooltip.hidden = true;
+          goToDay(year, String(m).padStart(2, '0'), String(d).padStart(2, '0'));
+        });
+      }
+
+      grid.appendChild(cell);
+    }
+  }
+
+  const legend = document.getElementById('calendarLegend');
+  legend.innerHTML = `
+    <span>無資料</span>
+    <span class="swatch" style="background:${CAL_NO_DATA}"></span>
+    <span style="margin-left:12px">移動距離 (km)：</span>
+    ${CAL_LEVELS.map(l => `
+      <span class="swatch" style="background:${l.color}"></span>
+      <span>${l.label}</span>
+    `).join('')}
+  `;
+}
+
+let reviewYear = null;
+
+function fmtNum(n) {
+  return Math.round(n).toLocaleString('zh-TW');
+}
+
+async function renderReview(year) {
+  reviewYear = year;
+  document.getElementById('reviewTitle').textContent = `${year} 年回顧`;
+
+  const years = indexData.years;
+  document.getElementById('reviewPrevYear').disabled = years.indexOf(year) <= 0;
+  document.getElementById('reviewNextYear').disabled = years.indexOf(year) >= years.length - 1;
+
+  const body = document.getElementById('reviewBody');
+  body.innerHTML = '<div class="review-empty">統計中...</div>';
+
+  if (!yearCache[year]) {
+    const res = await fetch(`data/${year}.geojson`);
+    yearCache[year] = await res.json();
+  }
+  const features = yearCache[year].features;
+
+  // 移動距離：依交通方式彙總
+  let totalMeters = 0;
+  const byMode = {};
+  features.forEach(f => {
+    if (f.properties.type !== 'activity') return;
+    const mode = f.properties.activityType || 'unknown';
+    const dist = parseFloat(f.properties.distanceMeters) || 0;
+    byMode[mode] = (byMode[mode] || 0) + dist;
+    totalMeters += dist;
+  });
+
+  // 停留點：依地點彙總造訪次數
+  const visitCounts = {};
+  features.forEach(f => {
+    const p = f.properties;
+    if (p.type !== 'visit' || !p.placeId) return;
+    if (!visitCounts[p.placeId]) {
+      visitCounts[p.placeId] = {
+        count: 0,
+        name: p.placeName || p.semanticType || '未知地點',
+        pinned: p.pinSource === 'auto',
+        coords: f.geometry.coordinates,
+      };
+    }
+    visitCounts[p.placeId].count += 1;
+  });
+
+  const distinctPlaces = Object.keys(visitCounts).length;
+
+  // 新地點：搜尋索引裡最早出現的月份就落在這一年
+  const newPlaces = searchIndexData.filter(p => p.months[0].startsWith(year)).length;
+
+  // 有記錄的天數 + 移動最遠的一天
+  const daysThisYear = Object.entries(dailyStats).filter(([d]) => d.startsWith(year));
+  const recordedDays = daysThisYear.length;
+  const farthest = daysThisYear.reduce((best, cur) => (cur[1].m > best[1].m ? cur : best), daysThisYear[0]);
+
+  // 交通方式長條圖：取前 6 名，其餘併為「其他」
+  const modeEntries = Object.entries(byMode).sort((a, b) => b[1] - a[1]);
+  const topModes = modeEntries.slice(0, 6);
+  const restMeters = modeEntries.slice(6).reduce((s, [, m]) => s + m, 0);
+  if (restMeters > 0) topModes.push(['其他', restMeters]);
+  const maxMode = topModes.length ? topModes[0][1] : 1;
+
+  const modeBars = topModes.map(([mode, meters]) => `
+    <div class="bar-row">
+      <div class="bar-label">${mode === '其他' ? '其他' : activityLabel(mode)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (meters / maxMode) * 100)}%"></div></div>
+      <div class="bar-value">${fmtNum(meters / 1000)} km</div>
+    </div>
+  `).join('');
+
+  // 最常去的地點（排除住家/公司，那些一定排最前面，看不出資訊）
+  const topPlaces = Object.entries(visitCounts)
+    .filter(([, v]) => !v.pinned)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 5);
+
+  const placeRows = topPlaces.map(([placeId, v], i) => `
+    <div class="place-row" data-lat="${v.coords[1]}" data-lon="${v.coords[0]}">
+      <span class="rank">${i + 1}</span>
+      <span class="place-name">${escapeAttr(v.name)}</span>
+      <span class="place-count">${v.count} 次</span>
+    </div>
+  `).join('') || '<div class="review-empty">這一年沒有住家/公司以外的停留記錄</div>';
+
+  body.innerHTML = `
+    <div class="review-hero">
+      <div class="hero-label">${year} 年總移動距離</div>
+      <div class="hero-value">${fmtNum(totalMeters / 1000)}<span class="hero-unit"> km</span></div>
+    </div>
+
+    <div class="review-tiles">
+      <div class="review-tile">
+        <div class="tile-label">有記錄的天數</div>
+        <div class="tile-value">${recordedDays} 天</div>
+      </div>
+      <div class="review-tile">
+        <div class="tile-label">去過的地點</div>
+        <div class="tile-value">${fmtNum(distinctPlaces)} 個</div>
+        <div class="tile-sub">其中 ${fmtNum(newPlaces)} 個是第一次去</div>
+      </div>
+      <div class="review-tile clickable" id="farthestDayTile">
+        <div class="tile-label">移動最遠的一天</div>
+        <div class="tile-value">${fmtNum(farthest[1].m / 1000)} km</div>
+        <div class="tile-sub">${farthest[0]}（點擊查看）</div>
+      </div>
+    </div>
+
+    <div class="review-section">
+      <h4>各交通方式的移動距離</h4>
+      ${modeBars || '<div class="review-empty">這一年沒有移動段落記錄</div>'}
+    </div>
+
+    <div class="review-section">
+      <h4>最常去的地點（不含住家/公司）</h4>
+      ${placeRows}
+    </div>
+  `;
+
+  const tile = document.getElementById('farthestDayTile');
+  if (tile) {
+    tile.addEventListener('click', () => {
+      const [y, m, d] = farthest[0].split('-');
+      document.getElementById('reviewOverlay').hidden = true;
+      goToDay(y, m, d);
+    });
+  }
+
+  body.querySelectorAll('.place-row').forEach(row => {
+    row.addEventListener('click', () => {
+      document.getElementById('reviewOverlay').hidden = true;
+      goToPlace({
+        lat: parseFloat(row.dataset.lat),
+        lon: parseFloat(row.dataset.lon),
+        months: indexData.months.filter(m => m.startsWith(year)),
+      });
+    });
+  });
+}
+
+let commuteData = [];
+let commuteYear = null;
+
+function median(nums) {
+  if (!nums.length) return 0;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function minutesText(min) {
+  const m = Math.round(min);
+  if (m < 60) return `${m} 分`;
+  return `${Math.floor(m / 60)} 小時 ${m % 60} 分`;
+}
+
+function hourChart(trips, title) {
+  const counts = new Array(24).fill(0);
+  trips.forEach(t => { counts[t.departHour] += 1; });
+  const max = Math.max(...counts, 1);
+
+  const cols = counts.map((c, h) => `
+    <div class="hour-col ${c === 0 ? 'empty' : ''}" data-hour="${h}" data-count="${c}">
+      <div class="hour-bar" style="height:${c === 0 ? 1 : (c / max) * 100}%"></div>
+    </div>
+  `).join('');
+
+  const axis = counts.map((_, h) => `<span>${h % 6 === 0 ? h : ''}</span>`).join('');
+
+  return `
+    <h4>${title}</h4>
+    <div class="hour-chart">${cols}</div>
+    <div class="hour-axis">${axis}</div>
+  `;
+}
+
+function renderCommute(year) {
+  commuteYear = year;
+  document.getElementById('commuteTitle').textContent = `${year} 年通勤分析`;
+
+  const years = indexData.years;
+  document.getElementById('commutePrevYear').disabled = years.indexOf(year) <= 0;
+  document.getElementById('commuteNextYear').disabled = years.indexOf(year) >= years.length - 1;
+
+  const body = document.getElementById('commuteBody');
+  const trips = commuteData.filter(t => t.date.startsWith(year));
+
+  if (!trips.length) {
+    body.innerHTML = '<div class="review-empty">這一年沒有找到住家↔公司之間的通勤記錄</div>';
+    return;
+  }
+
+  const toWork = trips.filter(t => t.dir === 'toWork');
+  const toHome = trips.filter(t => t.dir === 'toHome');
+  const totalHours = trips.reduce((s, t) => s + t.totalMin, 0) / 60;
+  const fastest = trips.reduce((best, t) => (t.totalMin < best.totalMin ? t : best), trips[0]);
+
+  // 依交通方式彙總
+  const byMode = {};
+  trips.forEach(t => {
+    const mode = t.mode || 'unknown';
+    if (!byMode[mode]) byMode[mode] = { count: 0, totals: [], kms: [] };
+    byMode[mode].count += 1;
+    byMode[mode].totals.push(t.totalMin);
+    byMode[mode].kms.push(t.km);
+  });
+  const modeRows = Object.entries(byMode)
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([mode, v]) => `
+      <tr>
+        <td>${activityLabel(mode)}</td>
+        <td class="num">${v.count} 趟</td>
+        <td class="num">${minutesText(median(v.totals))}</td>
+        <td class="num">${median(v.kms).toFixed(1)} km</td>
+      </tr>
+    `).join('');
+
+  const dirTile = (label, list) => {
+    if (!list.length) return `<div class="review-tile"><div class="tile-label">${label}</div><div class="tile-value">—</div></div>`;
+    return `
+      <div class="review-tile">
+        <div class="tile-label">${label}</div>
+        <div class="tile-value">${minutesText(median(list.map(t => t.totalMin)))}</div>
+        <div class="tile-sub">${list.length} 趟・純移動 ${minutesText(median(list.map(t => t.moveMin)))}</div>
+      </div>
+    `;
+  };
+
+  body.innerHTML = `
+    <div class="review-hero">
+      <div class="hero-label">${year} 年花在通勤路上的時間</div>
+      <div class="hero-value">${fmtNum(totalHours)}<span class="hero-unit"> 小時</span></div>
+    </div>
+
+    <div class="review-tiles">
+      ${dirTile('上班（住家→公司）', toWork)}
+      ${dirTile('下班（公司→住家）', toHome)}
+      <div class="review-tile">
+        <div class="tile-label">最快的一趟</div>
+        <div class="tile-value">${minutesText(fastest.totalMin)}</div>
+        <div class="tile-sub">${fastest.date}・${fastest.km} km</div>
+      </div>
+    </div>
+
+    <div class="review-section">
+      ${hourChart(toWork, '上班出發時間分布（幾點離開住家）')}
+    </div>
+
+    <div class="review-section">
+      ${hourChart(toHome, '下班出發時間分布（幾點離開公司）')}
+    </div>
+
+    <div class="review-section">
+      <h4>各交通方式的通勤表現</h4>
+      <table class="commute-table">
+        <tr><th>交通方式</th><th style="text-align:right">趟數</th><th style="text-align:right">耗時中位數</th><th style="text-align:right">距離中位數</th></tr>
+        ${modeRows}
+      </table>
+    </div>
+
+    <div id="calendarFootnote">
+      耗時是「門到門」（離開起點到抵達終點，含中途順路停留）；純移動時間不含中途停留。
+      交通方式取該趟距離最長的移動段落。
+    </div>
+  `;
+
+  // 出發時間長條圖的滑鼠提示
+  const tooltip = document.getElementById('sharedTooltip');
+  body.querySelectorAll('.hour-col').forEach(col => {
+    col.addEventListener('mouseenter', (e) => {
+      tooltip.textContent = `${col.dataset.hour}:00－${col.dataset.hour}:59　${col.dataset.count} 趟`;
+      tooltip.hidden = false;
+      const rect = e.currentTarget.getBoundingClientRect();
+      tooltip.style.left = `${rect.left}px`;
+      tooltip.style.top = `${rect.bottom + 6}px`;
+    });
+    col.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  });
+}
+
+let rhythmYear = null;
+const WEEKDAY_NAMES = ['週一', '週二', '週三', '週四', '週五', '週六', '週日'];
+
+// 星期一為 0、星期日為 6（JS 的 getDay() 是星期日 0，要轉一下）
+function weekdayIndex(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+async function renderRhythm(year) {
+  rhythmYear = year;
+  document.getElementById('rhythmTitle').textContent = `${year} 年時間分布`;
+
+  const years = indexData.years;
+  document.getElementById('rhythmPrevYear').disabled = years.indexOf(year) <= 0;
+  document.getElementById('rhythmNextYear').disabled = years.indexOf(year) >= years.length - 1;
+
+  const body = document.getElementById('rhythmBody');
+  body.innerHTML = '<div class="review-empty">統計中...</div>';
+
+  if (!yearCache[year]) {
+    const res = await fetch(`data/${year}.geojson`);
+    yearCache[year] = await res.json();
+  }
+
+  // 星期 × 時段：用移動段落的出發時刻統計
+  const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  const byHour = new Array(24).fill(0);
+  yearCache[year].features.forEach(f => {
+    if (f.properties.type !== 'activity') return;
+    const d = new Date(f.properties.startTime);
+    grid[weekdayIndex(d)][d.getHours()] += 1;
+    byHour[d.getHours()] += 1;
+  });
+
+  // 星期幾：用每日移動距離統計（每個星期出現的天數不同，所以看平均而不是總和）
+  const byWeekday = Array.from({ length: 7 }, () => ({ days: 0, meters: 0 }));
+  Object.entries(dailyStats).forEach(([dateKey, v]) => {
+    if (!dateKey.startsWith(year)) return;
+    const [y, m, d] = dateKey.split('-').map(Number);
+    const wd = weekdayIndex(new Date(y, m - 1, d));
+    byWeekday[wd].days += 1;
+    byWeekday[wd].meters += v.m;
+  });
+
+  const avgKm = byWeekday.map(w => (w.days ? w.meters / w.days / 1000 : 0));
+  const maxAvg = Math.max(...avgKm, 1);
+
+  const weekdayBars = avgKm.map((km, i) => `
+    <div class="bar-row">
+      <div class="bar-label">${WEEKDAY_NAMES[i]}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.max(1, (km / maxAvg) * 100)}%"></div></div>
+      <div class="bar-value">${km.toFixed(1)} km／天</div>
+    </div>
+  `).join('');
+
+  // 平日 vs 週末
+  const weekdayStats = byWeekday.slice(0, 5).reduce((a, w) => ({ days: a.days + w.days, meters: a.meters + w.meters }), { days: 0, meters: 0 });
+  const weekendStats = byWeekday.slice(5).reduce((a, w) => ({ days: a.days + w.days, meters: a.meters + w.meters }), { days: 0, meters: 0 });
+  const weekdayAvg = weekdayStats.days ? weekdayStats.meters / weekdayStats.days / 1000 : 0;
+  const weekendAvg = weekendStats.days ? weekendStats.meters / weekendStats.days / 1000 : 0;
+
+  const busiestWeekday = avgKm.indexOf(Math.max(...avgKm));
+  const busiestHour = byHour.indexOf(Math.max(...byHour));
+  const maxCell = Math.max(...grid.flat(), 1);
+
+  // 熱力圖：格子顏色用相對強度（該年最忙的格子為最深）
+  let gridHtml = '<div class="row-label"></div>';
+  for (let h = 0; h < 24; h++) {
+    gridHtml += `<div class="col-header">${h % 6 === 0 ? h : ''}</div>`;
+  }
+  for (let wd = 0; wd < 7; wd++) {
+    gridHtml += `<div class="row-label">${WEEKDAY_NAMES[wd]}</div>`;
+    for (let h = 0; h < 24; h++) {
+      const count = grid[wd][h];
+      const ratio = count / maxCell;
+      let color = CAL_NO_DATA;
+      if (count > 0) {
+        const idx = Math.min(CAL_LEVELS.length - 1, Math.floor(ratio * CAL_LEVELS.length));
+        color = CAL_LEVELS[idx].color;
+      }
+      gridHtml += `<div class="rcell ${count > 0 ? 'has-data' : ''}" style="background:${color}"
+        data-wd="${wd}" data-hour="${h}" data-count="${count}"></div>`;
+    }
+  }
+
+  body.innerHTML = `
+    <div class="review-tiles">
+      <div class="review-tile">
+        <div class="tile-label">移動最多的一天</div>
+        <div class="tile-value">${WEEKDAY_NAMES[busiestWeekday]}</div>
+        <div class="tile-sub">平均 ${avgKm[busiestWeekday].toFixed(1)} km／天</div>
+      </div>
+      <div class="review-tile">
+        <div class="tile-label">最常出發的時段</div>
+        <div class="tile-value">${busiestHour}:00</div>
+        <div class="tile-sub">${byHour[busiestHour]} 個移動段落</div>
+      </div>
+      <div class="review-tile">
+        <div class="tile-label">平日 vs 週末</div>
+        <div class="tile-value">${weekdayAvg.toFixed(0)} / ${weekendAvg.toFixed(0)} km</div>
+        <div class="tile-sub">平日 ${weekdayStats.days} 天・週末 ${weekendStats.days} 天</div>
+      </div>
+    </div>
+
+    <div class="review-section">
+      <h4>星期 × 時段的移動熱度（顏色越深代表那個時段越常出發）</h4>
+      <div id="rhythmGrid">${gridHtml}</div>
+      <div id="rhythmLegend">
+        <span>沒有移動</span>
+        <span class="swatch" style="background:${CAL_NO_DATA}"></span>
+        <span style="margin-left:12px">少</span>
+        ${CAL_LEVELS.map(l => `<span class="swatch" style="background:${l.color}"></span>`).join('')}
+        <span>多（最多 ${maxCell} 次）</span>
+      </div>
+    </div>
+
+    <div class="review-section">
+      <h4>各星期的平均移動距離</h4>
+      ${weekdayBars}
+    </div>
+  `;
+
+  const tooltip = document.getElementById('sharedTooltip');
+  body.querySelectorAll('.rcell.has-data').forEach(cell => {
+    cell.addEventListener('mouseenter', (e) => {
+      const wd = WEEKDAY_NAMES[cell.dataset.wd];
+      tooltip.textContent = `${wd} ${cell.dataset.hour}:00　${cell.dataset.count} 個移動段落`;
+      tooltip.hidden = false;
+      const rect = e.currentTarget.getBoundingClientRect();
+      tooltip.style.left = `${rect.left}px`;
+      tooltip.style.top = `${rect.bottom + 6}px`;
+    });
+    cell.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+  });
+}
+
+async function goToDay(year, month, day) {
+  const monthKey = `${year}-${month}`;
+  document.getElementById('calendarOverlay').hidden = true;
+
+  yearSelect.value = year;
+  populateMonthSelect(year);
+  monthSelect.value = monthKey;
+  await loadMonth(monthKey);
+
+  if ([...daySelect.options].some(o => o.value === day)) {
+    daySelect.value = day;
+    applyDayFilter();
+  }
+}
+
+async function goToPlace(place) {
+  const targetMonth = place.months[place.months.length - 1]; // 最近一次出現的月份
+  const year = targetMonth.slice(0, 4);
+  yearSelect.value = year;
+  populateMonthSelect(year);
+  monthSelect.value = targetMonth;
+  await loadMonth(targetMonth);
+
+  let target = null;
+  layers.visit.eachLayer(m => {
+    const ll = m.getLatLng();
+    if (Math.abs(ll.lat - place.lat) < 0.0001 && Math.abs(ll.lng - place.lon) < 0.0001) {
+      target = m;
+    }
+  });
+  if (target) {
+    layers.visit.zoomToShowLayer(target, () => target.openPopup());
+  }
+}
+
+function renderSearchResults(query) {
+  const resultsEl = document.getElementById('searchResults');
+  if (!query) {
+    resultsEl.hidden = true;
+    resultsEl.innerHTML = '';
+    return;
+  }
+  const q = query.toLowerCase();
+  const matches = searchIndexData.filter(p => p.name && p.name.toLowerCase().includes(q)).slice(0, 15);
+
+  if (matches.length === 0) {
+    resultsEl.innerHTML = '<div class="no-result">找不到符合的地點</div>';
+  } else {
+    resultsEl.innerHTML = matches.map((p, i) => `<div data-idx="${i}">${escapeAttr(p.name)}</div>`).join('');
+    resultsEl.querySelectorAll('div[data-idx]').forEach(el => {
+      el.addEventListener('click', () => {
+        const place = matches[parseInt(el.dataset.idx, 10)];
+        resultsEl.hidden = true;
+        document.getElementById('searchInput').value = place.name;
+        goToPlace(place);
+      });
+    });
+  }
+  resultsEl.hidden = false;
+}
+
+async function reloadCurrentView() {
+  const day = daySelect.value;
+  if (currentMonthKey) {
+    delete monthCache[currentMonthKey];
+    await loadMonth(currentMonthKey);
+    if (day && [...daySelect.options].some(o => o.value === day)) {
+      daySelect.value = day;
+      applyDayFilter();
+    }
+  } else {
+    delete yearCache[yearSelect.value];
+    await loadYear(yearSelect.value);
+  }
+}
+
+async function postToServer(path, payload) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw new Error('連不到伺服器，請確認是用 啟動地圖.bat 開的（純靜態伺服器不支援這個功能）');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `伺服器錯誤（${res.status}）`);
+  }
+}
+
+map.on('popupopen', (e) => {
+  const el = e.popup.getElement();
+  if (!el) return;
+
+  const fixBtn = el.querySelector('.btn-fix-name');
+  if (fixBtn) {
+    fixBtn.addEventListener('click', async () => {
+      const placeId = fixBtn.dataset.placeId;
+      const newName = prompt('輸入正確的地點名稱（留空 = 取消覆寫，改回自動查到的名稱）：', fixBtn.dataset.currentName || '');
+      if (newName === null) return;
+      fixBtn.disabled = true;
+      fixBtn.textContent = '儲存中...';
+      try {
+        await postToServer('/api/override-name', { placeId, name: newName });
+        map.closePopup();
+        await reloadCurrentView();
+      } catch (err) {
+        alert('儲存失敗：' + err.message);
+        fixBtn.disabled = false;
+        fixBtn.textContent = '修正名稱';
+      }
+    });
+  }
+
+  const pinBtn = el.querySelector('.btn-toggle-pin');
+  if (pinBtn) {
+    pinBtn.addEventListener('click', async () => {
+      const placeId = pinBtn.dataset.placeId;
+      const originalLabel = pinBtn.textContent;
+      pinBtn.disabled = true;
+      pinBtn.textContent = '處理中...';
+      try {
+        await postToServer('/api/toggle-pin', { placeId });
+        map.closePopup();
+        await reloadCurrentView();
+      } catch (err) {
+        alert('操作失敗：' + err.message);
+        pinBtn.disabled = false;
+        pinBtn.textContent = originalLabel;
+      }
+    });
+  }
+
+  const hideBtn = el.querySelector('.btn-hide-visit');
+  if (hideBtn) {
+    hideBtn.addEventListener('click', async () => {
+      if (!confirm('確定要在地圖上隱藏這筆記錄嗎？\n（原始資料不會被刪除，需要復原的話可以編輯 data/excluded_visits.json）')) return;
+      const placeId = hideBtn.dataset.placeId;
+      const startTime = hideBtn.dataset.startTime;
+      hideBtn.disabled = true;
+      hideBtn.textContent = '處理中...';
+      try {
+        await postToServer('/api/exclude-visit', { placeId, startTime });
+        map.closePopup();
+        await reloadCurrentView();
+      } catch (err) {
+        alert('操作失敗：' + err.message);
+        hideBtn.disabled = false;
+        hideBtn.textContent = '隱藏這筆';
+      }
+    });
+  }
+});
+
+async function init() {
+  const res = await fetch('data/index.json');
+  indexData = await res.json();
+
+  fetch('data/search_index.json').then(r => r.json()).then(data => { searchIndexData = data; });
+  fetch('data/daily_stats.json').then(r => r.json()).then(data => { dailyStats = data; });
+  fetch('data/commutes.json').then(r => r.json()).then(data => { commuteData = data; });
+
+  const calOverlay = document.getElementById('calendarOverlay');
+  document.getElementById('calendarBtn').addEventListener('click', () => {
+    renderCalendar(yearSelect.value);
+    calOverlay.hidden = false;
+  });
+  document.getElementById('calendarClose').addEventListener('click', () => { calOverlay.hidden = true; });
+  calOverlay.addEventListener('click', (e) => {
+    if (e.target === calOverlay) calOverlay.hidden = true;  // 點卡片外面關閉
+  });
+  document.getElementById('calPrevYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(calendarYear);
+    if (i > 0) renderCalendar(indexData.years[i - 1]);
+  });
+  document.getElementById('calNextYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(calendarYear);
+    if (i < indexData.years.length - 1) renderCalendar(indexData.years[i + 1]);
+  });
+
+  const reviewOverlay = document.getElementById('reviewOverlay');
+  document.getElementById('reviewBtn').addEventListener('click', () => {
+    reviewOverlay.hidden = false;
+    renderReview(yearSelect.value);
+  });
+  document.getElementById('reviewClose').addEventListener('click', () => { reviewOverlay.hidden = true; });
+  reviewOverlay.addEventListener('click', (e) => {
+    if (e.target === reviewOverlay) reviewOverlay.hidden = true;
+  });
+  document.getElementById('reviewPrevYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(reviewYear);
+    if (i > 0) renderReview(indexData.years[i - 1]);
+  });
+  document.getElementById('reviewNextYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(reviewYear);
+    if (i < indexData.years.length - 1) renderReview(indexData.years[i + 1]);
+  });
+
+  const commuteOverlay = document.getElementById('commuteOverlay');
+  document.getElementById('commuteBtn').addEventListener('click', () => {
+    commuteOverlay.hidden = false;
+    renderCommute(yearSelect.value);
+  });
+  document.getElementById('commuteClose').addEventListener('click', () => { commuteOverlay.hidden = true; });
+  commuteOverlay.addEventListener('click', (e) => {
+    if (e.target === commuteOverlay) commuteOverlay.hidden = true;
+  });
+  document.getElementById('commutePrevYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(commuteYear);
+    if (i > 0) renderCommute(indexData.years[i - 1]);
+  });
+  document.getElementById('commuteNextYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(commuteYear);
+    if (i < indexData.years.length - 1) renderCommute(indexData.years[i + 1]);
+  });
+
+  const rhythmOverlay = document.getElementById('rhythmOverlay');
+  document.getElementById('rhythmBtn').addEventListener('click', () => {
+    rhythmOverlay.hidden = false;
+    renderRhythm(yearSelect.value);
+  });
+  document.getElementById('rhythmClose').addEventListener('click', () => { rhythmOverlay.hidden = true; });
+  rhythmOverlay.addEventListener('click', (e) => {
+    if (e.target === rhythmOverlay) rhythmOverlay.hidden = true;
+  });
+  document.getElementById('rhythmPrevYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(rhythmYear);
+    if (i > 0) renderRhythm(indexData.years[i - 1]);
+  });
+  document.getElementById('rhythmNextYear').addEventListener('click', () => {
+    const i = indexData.years.indexOf(rhythmYear);
+    if (i < indexData.years.length - 1) renderRhythm(indexData.years[i + 1]);
+  });
+
+  const searchInput = document.getElementById('searchInput');
+  const searchResults = document.getElementById('searchResults');
+  searchInput.addEventListener('input', () => renderSearchResults(searchInput.value.trim()));
+  searchInput.addEventListener('focus', () => {
+    if (searchInput.value.trim()) renderSearchResults(searchInput.value.trim());
+  });
+  document.addEventListener('click', (e) => {
+    if (!document.getElementById('searchBox').contains(e.target)) {
+      searchResults.hidden = true;
+    }
+  });
+
+  indexData.years.forEach(y => {
+    const opt = document.createElement('option');
+    opt.value = y;
+    opt.textContent = `${y} 年`;
+    yearSelect.appendChild(opt);
+  });
+
+  const lastYear = indexData.years[indexData.years.length - 1];
+  yearSelect.value = lastYear;
+  populateMonthSelect(lastYear);
+
+  const monthsInLastYear = indexData.months.filter(m => m.startsWith(lastYear));
+  const lastMonth = monthsInLastYear[monthsInLastYear.length - 1];
+  monthSelect.value = lastMonth;
+
+  yearSelect.addEventListener('change', () => {
+    populateMonthSelect(yearSelect.value);
+    monthSelect.value = '';
+    loadYear(yearSelect.value);
+  });
+
+  monthSelect.addEventListener('change', () => {
+    if (monthSelect.value === '') {
+      loadYear(yearSelect.value);
+    } else {
+      loadMonth(monthSelect.value);
+    }
+  });
+
+  daySelect.addEventListener('change', applyDayFilter);
+
+  document.getElementById('showVisit').addEventListener('change', e => {
+    e.target.checked ? map.addLayer(layers.visit) : map.removeLayer(layers.visit);
+  });
+  document.getElementById('showPinned').addEventListener('change', e => {
+    e.target.checked ? map.addLayer(layers.pinned) : map.removeLayer(layers.pinned);
+  });
+  document.getElementById('showPath').addEventListener('change', e => {
+    e.target.checked ? map.addLayer(layers.timelinePath) : map.removeLayer(layers.timelinePath);
+  });
+  document.getElementById('showActivity').addEventListener('change', e => {
+    e.target.checked ? map.addLayer(layers.activity) : map.removeLayer(layers.activity);
+  });
+
+  loadMonth(lastMonth);
+}
+
+init();
+</script>
+
+</body>
+</html>
